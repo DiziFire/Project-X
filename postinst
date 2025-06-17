@@ -1,0 +1,225 @@
+#!/bin/sh
+
+# WeaponX Setup Script
+echo "Running WeaponX Setup..."
+
+# Check if we are in a rootless environment
+if [ -d /var/jb ]; then
+  echo "Detected rootless jailbreak environment"
+  ROOT_PREFIX="/var/jb"
+else
+  echo "Detected traditional jailbreak environment"
+  ROOT_PREFIX=""
+fi
+
+# Create the preferences directories if they don't exist
+PREFS_DIR="${ROOT_PREFIX}/var/mobile/Library/Preferences"
+mkdir -p "$PREFS_DIR"
+chmod 755 "$PREFS_DIR"
+chown mobile:mobile "$PREFS_DIR"
+
+# Create the WeaponX directories if they don't exist
+WEAPONX_DIR="${ROOT_PREFIX}/var/mobile/Library/WeaponX"
+mkdir -p "$WEAPONX_DIR"
+chmod 755 "$WEAPONX_DIR"
+chown mobile:mobile "$WEAPONX_DIR"
+
+# Create WeaponX daemon directories - use root:wheel ownership for daemon
+DAEMON_DIR="${ROOT_PREFIX}/Library/WeaponX"
+GUARDIAN_DIR="${DAEMON_DIR}/Guardian"
+mkdir -p "$GUARDIAN_DIR"
+chmod 755 "$DAEMON_DIR"
+chmod 755 "$GUARDIAN_DIR"
+chown root:wheel "$DAEMON_DIR"
+chown root:wheel "$GUARDIAN_DIR"
+
+# Create and set permissions for log files
+touch "${GUARDIAN_DIR}/daemon.log"
+touch "${GUARDIAN_DIR}/guardian-stdout.log"
+touch "${GUARDIAN_DIR}/guardian-stderr.log"
+chmod 664 "${GUARDIAN_DIR}"/*.log
+chown root:wheel "${GUARDIAN_DIR}"/*.log
+
+# Ensure daemon executable has proper permissions
+if [ -f "${DAEMON_DIR}/WeaponXDaemon" ]; then
+  chmod 755 "${DAEMON_DIR}/WeaponXDaemon"
+  chown root:wheel "${DAEMON_DIR}/WeaponXDaemon"
+  echo "Set permissions for WeaponXDaemon executable"
+else
+  echo "ERROR: WeaponXDaemon executable not found at ${DAEMON_DIR}/WeaponXDaemon"
+fi
+
+# Create Profiles directory
+PROFILES_DIR="${WEAPONX_DIR}/Profiles"
+mkdir -p "$PROFILES_DIR"
+chmod 755 "$PROFILES_DIR"
+chown mobile:mobile "$PROFILES_DIR"
+
+# Create a default profile if none exists
+if [ ! -d "${PROFILES_DIR}/1" ]; then
+  mkdir -p "${PROFILES_DIR}/1"
+  chmod 755 "${PROFILES_DIR}/1"
+  chown mobile:mobile "${PROFILES_DIR}/1"
+  
+  # Create directories within the profile
+  mkdir -p "${PROFILES_DIR}/1/appdata"
+  chmod 755 "${PROFILES_DIR}/1/appdata"
+  chown mobile:mobile "${PROFILES_DIR}/1/appdata"
+  
+  mkdir -p "${PROFILES_DIR}/1/identity"
+  chmod 755 "${PROFILES_DIR}/1/identity"
+  chown mobile:mobile "${PROFILES_DIR}/1/identity"
+  
+  # Create profile info file
+  echo '{
+    "ProfileName": "Default",
+    "Description": "Default Profile",
+    "CreationDate": "'$(date "+%Y-%m-%d %H:%M:%S")'"
+  }' > "${PROFILES_DIR}/1/profile_info.plist"
+  chmod 644 "${PROFILES_DIR}/1/profile_info.plist"
+  chown mobile:mobile "${PROFILES_DIR}/1/profile_info.plist"
+  
+  # Create active profile info file
+  echo '{
+    "ProfileId": "1"
+  }' > "${WEAPONX_DIR}/active_profile_info.plist"
+  chmod 644 "${WEAPONX_DIR}/active_profile_info.plist"
+  chown mobile:mobile "${WEAPONX_DIR}/active_profile_info.plist"
+  
+  # Create current profile info file
+  echo '{
+    "ProfileId": "1"
+  }' > "${PROFILES_DIR}/current_profile_info.plist"
+  chmod 644 "${PROFILES_DIR}/current_profile_info.plist"
+  chown mobile:mobile "${PROFILES_DIR}/current_profile_info.plist"
+fi
+
+# Create global scope plist with Lyft enabled by default
+GLOBAL_SCOPE_PLIST="${PREFS_DIR}/com.hydra.projectx.global_scope.plist"
+if [ ! -f "$GLOBAL_SCOPE_PLIST" ]; then
+  echo '<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>ScopedApps</key>
+  <dict>
+    <key>com.zimride.instant</key>
+    <dict>
+      <key>enabled</key>
+      <true/>
+      <key>name</key>
+      <string>Lyft</string>
+      <key>version</key>
+      <string>1.0</string>
+      <key>bundleID</key>
+      <string>com.zimride.instant</string>
+      <key>installed</key>
+      <true/>
+    </dict>
+  </dict>
+</dict>
+</plist>' > "$GLOBAL_SCOPE_PLIST"
+  chmod 644 "$GLOBAL_SCOPE_PLIST"
+  chown mobile:mobile "$GLOBAL_SCOPE_PLIST"
+  echo "Created default global scope file with Lyft enabled"
+fi
+
+# Create settings plist if it doesn't exist
+SETTINGS_PLIST="${PREFS_DIR}/com.hydra.projectx.settings.plist"
+if [ ! -f "$SETTINGS_PLIST" ]; then
+  echo '<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>EnabledModules</key>
+  <dict>
+    <key>FileSystem</key>
+    <true/>
+    <key>Keychain</key>
+    <true/>
+    <key>UserDefaults</key>
+    <true/>
+  </dict>
+</dict>
+</plist>' > "$SETTINGS_PLIST"
+  chmod 644 "$SETTINGS_PLIST"
+  chown mobile:mobile "$SETTINGS_PLIST"
+  echo "Created default settings file with all modules enabled"
+fi
+
+# Handle the WeaponX daemon LaunchDaemon
+LAUNCHDAEMON_PATH="${ROOT_PREFIX}/Library/LaunchDaemons/com.hydra.weaponx.guardian.plist"
+LAUNCHDAEMON_LABEL="com.hydra.weaponx.guardian"
+
+# First make sure the plist exists
+if [ -f "$LAUNCHDAEMON_PATH" ]; then
+  echo "LaunchDaemon plist found, setting permissions..."
+  # Ensure correct permissions and ownership for LaunchDaemon plist
+  chmod 644 "$LAUNCHDAEMON_PATH"
+  chown root:wheel "$LAUNCHDAEMON_PATH"
+  
+  # Unload the daemon if it's already loaded (ignore errors)
+  echo "Unloading previous LaunchDaemon instance if it exists..."
+  launchctl bootout system/$LAUNCHDAEMON_LABEL 2>/dev/null || true
+  launchctl unload "$LAUNCHDAEMON_PATH" 2>/dev/null || true
+  
+  # Load the daemon with bootstrap for root daemons
+  echo "Loading LaunchDaemon using bootstrap system..."
+  launchctl bootstrap system "$LAUNCHDAEMON_PATH" 2>&1
+  BOOTSTRAP_STATUS=$?
+  
+  if [ $BOOTSTRAP_STATUS -eq 0 ]; then
+    echo "✅ LaunchDaemon bootstrapped successfully!"
+  else
+    echo "⚠️ Bootstrap failed, trying traditional load..."
+    launchctl load -w "$LAUNCHDAEMON_PATH" 2>&1
+    LOAD_STATUS=$?
+    echo "Traditional load status: $LOAD_STATUS"
+  fi
+  
+  # Verify the daemon is loaded (give it a moment to start)
+  sleep 1
+  if launchctl list | grep -q "$LAUNCHDAEMON_LABEL"; then
+    echo "✅ Guardian daemon successfully loaded!"
+    
+    # Verify the daemon is running by checking for its process
+    if ps aux | grep -v grep | grep WeaponXDaemon > /dev/null; then
+      echo "✅ Guardian daemon process is running!"
+    else
+      echo "⚠️ Guardian daemon loaded but process not found."
+    fi
+  else
+    echo "⚠️ Warning: Guardian daemon may not have loaded correctly."
+    echo "Checking daemon executable permissions:"
+    ls -la "${ROOT_PREFIX}/Library/WeaponX/WeaponXDaemon"
+    
+    echo "Checking LaunchDaemon plist:"
+    ls -la "$LAUNCHDAEMON_PATH"
+    
+    echo "Checking log directory permissions:"
+    ls -la "${ROOT_PREFIX}/Library/WeaponX/Guardian/"
+    
+    echo "Attempting direct launch for debugging..."
+    "${ROOT_PREFIX}/Library/WeaponX/WeaponXDaemon" > /dev/null 2>&1 &
+    DAEMON_PID=$!
+    sleep 2
+    if kill -0 $DAEMON_PID 2>/dev/null; then
+      echo "✅ Direct launch succeeded (PID: $DAEMON_PID). Daemon can run!"
+      kill $DAEMON_PID
+      
+      echo "Trying enhanced bootstrap..."
+      launchctl enable system/$LAUNCHDAEMON_LABEL
+      launchctl kickstart -k system/$LAUNCHDAEMON_LABEL
+    else
+      echo "❌ Direct launch failed. Daemon might have errors."
+    fi
+    
+    echo "Log files should appear at: ${ROOT_PREFIX}/Library/WeaponX/Guardian/"
+    ls -la "${ROOT_PREFIX}/Library/WeaponX/Guardian/"
+  fi
+else
+  echo "ERROR: LaunchDaemon plist not found at ${LAUNCHDAEMON_PATH}"
+fi
+
+echo "WeaponX Setup completed!"
+exit 0 

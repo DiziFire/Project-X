@@ -1,0 +1,6 @@
+#!/bin/sh
+
+# Extremely simplified prerm script to avoid dpkg interruption
+# Do nothing that might interrupt dpkg
+
+exit 0 

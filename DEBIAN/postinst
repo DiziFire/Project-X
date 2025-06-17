@@ -1,0 +1,113 @@
+#!/bin/sh
+
+# Post-installation script for ProjectX
+
+# Mark script execution
+echo "Running WeaponX post-installation script..."
+echo "===================================="
+
+# Detect rootless or traditional jailbreak
+if [ -d /var/jb ]; then
+    JBPREFIX="/var/jb"
+    echo "✅ Rootless jailbreak detected, using prefix: $JBPREFIX"
+else
+    JBPREFIX=""
+    echo "✅ Traditional jailbreak detected, using no prefix"
+fi
+
+# Create required directories with proper permissions
+echo "📂 Creating required directories..."
+
+# Create WeaponX directory
+mkdir -p "$JBPREFIX/var/mobile/Library/WeaponX"
+chmod 755 "$JBPREFIX/var/mobile/Library/WeaponX"
+chown mobile:mobile "$JBPREFIX/var/mobile/Library/WeaponX"
+
+# Create Sandbox/Profile directory (for LibSandy)
+mkdir -p "$JBPREFIX/Library/Sandbox/Profile"
+chmod 755 "$JBPREFIX/Library/Sandbox/Profile"
+chown root:wheel "$JBPREFIX/Library/Sandbox/Profile"
+
+# Create libSandy directory
+mkdir -p "$JBPREFIX/Library/libSandy"
+chmod 755 "$JBPREFIX/Library/libSandy"
+chown root:wheel "$JBPREFIX/Library/libSandy"
+
+# Define paths for profile file
+LIBSANDY_PROFILE="$JBPREFIX/Library/libSandy/projectx_filesystem_access.plist"
+MS_PROFILE="$JBPREFIX/Library/MobileSubstrate/DynamicLibraries/projectx_filesystem_access.plist"
+SANDBOX_PROFILE="$JBPREFIX/Library/Sandbox/Profile/projectx_filesystem_access.plist"
+
+# Copy profile to libSandy location
+if [ -f "$MS_PROFILE" ]; then
+    echo "📄 Copying LibSandy profile from MobileSubstrate..."
+    cp -f "$MS_PROFILE" "$LIBSANDY_PROFILE"
+    chmod 644 "$LIBSANDY_PROFILE"
+    chown root:wheel "$LIBSANDY_PROFILE"
+    echo "✅ Copied profile to $LIBSANDY_PROFILE"
+else
+    echo "⚠️ Profile not found at $MS_PROFILE"
+fi
+
+# Copy profile to Sandbox/Profile location (instead of symlinking)
+echo "📄 Installing LibSandy profile to Sandbox directory..."
+if [ -f "$LIBSANDY_PROFILE" ]; then
+    cp -f "$LIBSANDY_PROFILE" "$SANDBOX_PROFILE"
+    chmod 644 "$SANDBOX_PROFILE"
+    chown root:wheel "$SANDBOX_PROFILE"
+    echo "✅ Copied profile to $SANDBOX_PROFILE"
+else
+    echo "⚠️ LibSandy profile not found at $LIBSANDY_PROFILE"
+fi
+
+# Create symlink to Sandbox/Profile if copy failed
+if [ ! -f "$SANDBOX_PROFILE" ] && [ -f "$MS_PROFILE" ]; then
+    echo "🔗 Creating symlink to profile..."
+    ln -sf "$MS_PROFILE" "$SANDBOX_PROFILE"
+    echo "✅ Created symlink: $MS_PROFILE -> $SANDBOX_PROFILE"
+fi
+
+# Ensure logs exist with correct permissions
+echo "📝 Setting up log files..."
+mkdir -p "$JBPREFIX/Library/WeaponX/Guardian"
+touch "$JBPREFIX/Library/WeaponX/Guardian/daemon.log"
+touch "$JBPREFIX/Library/WeaponX/Guardian/guardian-stderr.log"
+touch "$JBPREFIX/Library/WeaponX/Guardian/guardian-stdout.log"
+chmod 664 "$JBPREFIX/Library/WeaponX/Guardian/"*.log
+chown mobile:mobile "$JBPREFIX/Library/WeaponX/Guardian/"*.log
+chmod 755 "$JBPREFIX/Library/WeaponX/Guardian"
+chown mobile:mobile "$JBPREFIX/Library/WeaponX/Guardian"
+
+# Set up LaunchDaemon
+echo "🚀 Setting up LaunchDaemon..."
+
+if [ -f "$JBPREFIX/Library/LaunchDaemons/com.hydra.weaponx.guardian.plist" ]; then
+    chmod 644 "$JBPREFIX/Library/LaunchDaemons/com.hydra.weaponx.guardian.plist"
+    chown root:wheel "$JBPREFIX/Library/LaunchDaemons/com.hydra.weaponx.guardian.plist"
+    
+    # Try to load daemon using launchctl
+    if command -v launchctl >/dev/null 2>&1; then
+        echo "🚀 Loading daemon using launchctl..."
+        # First, unload it if it's already loaded
+        launchctl unload "$JBPREFIX/Library/LaunchDaemons/com.hydra.weaponx.guardian.plist" 2>/dev/null
+        launchctl load "$JBPREFIX/Library/LaunchDaemons/com.hydra.weaponx.guardian.plist"
+    else
+        # Try to use traditional method
+        echo "🚀 Loading daemon using traditional method..."
+        if [ -f "$JBPREFIX/bin/launchctl" ]; then
+            "$JBPREFIX/bin/launchctl" unload "$JBPREFIX/Library/LaunchDaemons/com.hydra.weaponx.guardian.plist" 2>/dev/null
+            "$JBPREFIX/bin/launchctl" load "$JBPREFIX/Library/LaunchDaemons/com.hydra.weaponx.guardian.plist"
+        fi
+    fi
+else
+    echo "⚠️ LaunchDaemon plist not found"
+fi
+
+# Run container fix script if available
+if [ -f "$JBPREFIX/usr/bin/projectx-fix-containers" ]; then
+    echo "🔧 Running container fix script..."
+    "$JBPREFIX/usr/bin/projectx-fix-containers"
+fi
+
+echo "✅ WeaponX installation completed!"
+exit 0 

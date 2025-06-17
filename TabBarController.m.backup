@@ -1,0 +1,3729 @@
+#import "TabBarController.h"
+#import "ProjectXViewController.h"
+#import "MapTabViewController.h"
+#import "SecurityTabViewController.h"
+#import "AccountViewController.h"
+#import "SupportViewController.h"
+#import "APIManager.h"
+#import "TokenManager.h"
+#import <objc/runtime.h>
+#import <Security/Security.h>
+#import <CommonCrypto/CommonHMAC.h>
+#import <CommonCrypto/CommonCrypto.h>
+#import <sys/sysctl.h>
+
+@interface TabBarController ()
+// Add a property to hold the Account nav controller
+@property (nonatomic, strong) UINavigationController *accountNavController;
+@property (nonatomic, strong) UILabel *networkStatusLabel;
+@property (nonatomic, strong) NSMutableDictionary *tabVerificationStatus; // Track which tabs have been verified
+@property (nonatomic, strong) NSMutableDictionary *tabLastVerificationTime; // Track when tabs were last verified
+@property (nonatomic, assign) BOOL isIPad; // Property to track if device is iPad
+@property (nonatomic, assign, readwrite) BOOL isDeviceIPad; // Make readwrite in class extension
+@end
+
+@implementation TabBarController
+
+// Helper method to determine if the current device is an iPad
+- (BOOL)isDeviceIPad {
+    // Use both model check and user interface idiom for better detection
+    return UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    
+    // Set iPad flag
+    self.isIPad = [self isDeviceIPad];
+    NSLog(@"[WeaponX] Device detected: %@", self.isIPad ? @"iPad" : @"iPhone");
+    
+    // Initialize verification status tracking
+    self.tabVerificationStatus = [NSMutableDictionary dictionaryWithDictionary:@{
+        @"map_tab": @NO,
+        @"security_tab": @NO
+    }];
+    
+    // Initialize last verification time tracking
+    self.tabLastVerificationTime = [NSMutableDictionary dictionary];
+    
+    // Don't automatically clear verification data on startup since this breaks offline functionality
+    // Only clear verification if there's a specific need, like after login/logout or when the plan changes
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    BOOL shouldClearVerifications = [defaults boolForKey:@"WeaponXNeedsVerificationReset"];
+    
+    if (shouldClearVerifications) {
+        NSLog(@"[WeaponX] 🧹 LAYER 2: Clearing verification data due to reset flag");
+        [self clearAllVerificationsFromKeychain];
+        // Reset the flag
+        [defaults setBool:NO forKey:@"WeaponXNeedsVerificationReset"];
+        [defaults synchronize];
+    } else {
+        NSLog(@"[WeaponX] 🔐 LAYER 2: Preserving verification data for offline use");
+    }
+    
+    // Configure certificate pinning for secure connections
+    [self configureCertificatePinning];
+    
+    // Check for time tampering
+    BOOL isTimeTampered = [self isDeviceTimeTampered];
+    [defaults setBool:isTimeTampered forKey:@"WeaponXTimeManipulationDetected"];
+    
+    // Store configurable grace period if not set
+    if ([defaults doubleForKey:@"WeaponXOfflineGracePeriod"] <= 0) {
+        // Default to 24 hours (in seconds)
+        [defaults setDouble:(24 * 60 * 60) forKey:@"WeaponXOfflineGracePeriod"];
+    }
+    
+    // Set delegate to self for tab change notifications
+    self.delegate = self;
+    
+    // Register for notifications
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                            selector:@selector(accountTabDidFinish:)
+                                                name:@"accountTabDidFinish"
+                                              object:nil];
+    
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                            selector:@selector(userDidLogout:)
+                                                name:@"UserDidLogoutNotification"
+                                              object:nil];
+    
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                            selector:@selector(userDidLogin:)
+                                                name:@"UserDidLoginNotification"
+                                              object:nil];
+    
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                            selector:@selector(networkStatusDidChange:)
+                                                name:@"NetworkStatusDidChangeNotification"
+                                              object:nil];
+    
+    // Add a notification badge updater
+    UILabel *offlineIndicator = [[UILabel alloc] initWithFrame:CGRectZero];
+    offlineIndicator.backgroundColor = [UIColor colorWithRed:0.9 green:0.3 blue:0.3 alpha:1.0];
+    offlineIndicator.textColor = [UIColor whiteColor];
+    offlineIndicator.text = @"OFFLINE MODE";
+    offlineIndicator.textAlignment = NSTextAlignmentCenter;
+    offlineIndicator.font = [UIFont boldSystemFontOfSize:12];
+    offlineIndicator.alpha = 0.0; // Start hidden
+    offlineIndicator.layer.cornerRadius = 5.0;
+    offlineIndicator.clipsToBounds = YES;
+    offlineIndicator.translatesAutoresizingMaskIntoConstraints = NO;
+    offlineIndicator.tag = 8765; // Use a unique tag to find it later
+    
+    // Add to view hierarchy
+    [self.view addSubview:offlineIndicator];
+    
+    // Add constraints (top of the screen)
+    [NSLayoutConstraint activateConstraints:@[
+        [offlineIndicator.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:8],
+        [offlineIndicator.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+        [offlineIndicator.widthAnchor constraintEqualToConstant:150],
+        [offlineIndicator.heightAnchor constraintEqualToConstant:30]
+    ]];
+    
+    // Register for application lifecycle notifications
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                            selector:@selector(applicationDidBecomeActive:)
+                                                name:UIApplicationDidBecomeActiveNotification
+                                              object:nil];
+    
+    // Create view controllers
+    ProjectXViewController *identityVC = [[ProjectXViewController alloc] init];
+    MapTabViewController *mapVC = [[MapTabViewController alloc] init];
+    SecurityTabViewController *securityVC = [[SecurityTabViewController alloc] init];
+    SupportViewController *supportVC = [[SupportViewController alloc] init];
+    supportVC.tabBarController = self;
+    AccountViewController *accountVC = [[AccountViewController alloc] init];
+    
+    // Wrap each view controller in a navigation controller
+    UINavigationController *mapNav = [[UINavigationController alloc] initWithRootViewController:mapVC];
+    UINavigationController *identityNav = [[UINavigationController alloc] initWithRootViewController:identityVC];
+    UINavigationController *securityNav = [[UINavigationController alloc] initWithRootViewController:securityVC];
+    UINavigationController *supportNav = [[UINavigationController alloc] initWithRootViewController:supportVC];
+    
+    // Create account nav controller but don't add it to tab bar
+    self.accountNavController = [[UINavigationController alloc] initWithRootViewController:accountVC];
+    
+    // Configure tab bar items (excluding account)
+    mapNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Map" image:[UIImage systemImageNamed:@"map.fill"] tag:0];
+    identityNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Home" image:[UIImage systemImageNamed:@"house.fill"] tag:1];
+    securityNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Security" image:[UIImage systemImageNamed:@"shield.checkerboard"] tag:2];
+    supportNav.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Support" image:[UIImage systemImageNamed:@"lifepreserver"] tag:3];
+    
+    // Set view controllers (excluding account)
+    self.viewControllers = @[mapNav, identityNav, securityNav, supportNav];
+    
+    // Set Home tab as default selected tab
+    self.selectedIndex = 1;
+    
+    // Configure tab bar appearance
+    self.tabBar.tintColor = [UIColor systemBlueColor];
+    self.tabBar.backgroundColor = [UIColor systemBackgroundColor];
+    
+    // iPad-specific UI adjustments - don't use SplitViewController directly in tabs
+    if (self.isIPad) {
+        // For iPad, adjust tab bar size and appearance for better use of screen space
+        self.tabBar.itemWidth = 120; // Give more space for tab items on iPad
+        self.tabBar.itemPositioning = UITabBarItemPositioningCentered;
+        
+        // Add additional iPad-specific UI setup if needed
+        NSLog(@"[WeaponX] Applied iPad-specific TabBar customizations");
+    }
+    
+    // Start updating notification badge
+    [self startNotificationUpdateTimer];
+    
+    // Check if user is logged in
+    [self checkAuthenticationStatus];
+    
+    // Check network status on initial load
+    dispatch_async(dispatch_get_main_queue(), ^{
+        APIManager *apiManager = [APIManager sharedManager];
+        if (![apiManager isNetworkAvailable]) {
+            NSLog(@"[WeaponX] 📱 Initial load - network unavailable, showing indicator");
+            [self showOfflineModeIndicator];
+            
+            // Set flag for re-verification when network returns
+            NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+            [defaults setBool:YES forKey:@"WeaponXNeedsReVerification"];
+            [defaults synchronize];
+        }
+    });
+    
+    // Add this method to the viewDidLoad or similar initialization method
+    [self setupPlanDataObserver];
+    
+    // Add this call inside viewDidLoad method after setting self.isIPad
+    [self setupIPadSceneHandling];
+}
+
+// IMPORTANT: This method is called when user wants to switch to the account tab
+// but it's NOT in the tab bar directly - we present it modally instead
+- (void)switchToAccountTab {
+    // For iPad, be extra cautious about UITabBarController inside UISplitViewController issues
+    if (self.isIPad) {
+        // For iPad, always present Account screen modally to avoid any SplitViewController issues
+        AccountViewController *accountVC = [[AccountViewController alloc] init];
+        UINavigationController *navController = [[UINavigationController alloc] initWithRootViewController:accountVC];
+        navController.modalPresentationStyle = UIModalPresentationFormSheet;
+        [self presentViewController:navController animated:YES completion:nil];
+        return;
+    }
+    
+    // Regular iPhone implementation - continue as before
+    if (!self.accountNavController) {
+        AccountViewController *accountVC = [[AccountViewController alloc] init];
+        self.accountNavController = [[UINavigationController alloc] initWithRootViewController:accountVC];
+    }
+    
+    [self presentViewController:self.accountNavController animated:YES completion:nil];
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    
+    // Check for inconsistent state when view appears
+    [self checkForInconsistentState];
+    
+    // Post notification that this view controller did appear
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"UIViewController_DidAppear" 
+                                                        object:self 
+                                                      userInfo:nil];
+    
+    // Verify authentication status whenever tab bar controller appears
+    static BOOL firstAppearance = YES;
+    
+    // Only run this check once during the app launch sequence to avoid 
+    // duplicate login screen presentations
+    if (!firstAppearance) {
+        NSLog(@"[WeaponX] Re-checking authentication status on viewDidAppear");
+        [self checkAuthenticationStatus];
+    }
+    
+    firstAppearance = NO;
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (void)checkAuthenticationStatus {
+    // Check for auth token in NSUserDefaults
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSString *authToken = [defaults objectForKey:@"WeaponXAuthToken"];
+    NSDictionary *userData = [defaults objectForKey:@"WeaponXUserInfo"];
+    BOOL needsRelogin = [defaults boolForKey:@"WeaponXNeedsRelogin"];
+    
+    NSLog(@"[WeaponX] Checking authentication status at app startup");
+    
+    // If no auth token or user data or needs relogin flag is set, show login screen
+    if (!authToken || !userData || needsRelogin) {
+        NSLog(@"[WeaponX] No valid authentication found or relogin required, showing login screen");
+        [self presentLoginScreen];
+    } else {
+        NSLog(@"[WeaponX] Valid authentication found, skipping login screen");
+        
+        // Check for valid subscription plan
+        [self checkUserPlanStatus:authToken];
+        
+        // Check if login screen is currently presented and dismiss it if needed
+        if ([self.presentedViewController isKindOfClass:[UINavigationController class]]) {
+            UINavigationController *navController = (UINavigationController *)self.presentedViewController;
+            UIViewController *topVC = navController.topViewController;
+            
+            if ([topVC isKindOfClass:NSClassFromString(@"LoginViewController")] || 
+                [topVC isKindOfClass:NSClassFromString(@"SignupViewController")]) {
+                NSLog(@"[WeaponX] Dismissing login/signup screen since user is authenticated");
+                [self dismissViewControllerAnimated:YES completion:^{
+                    // Post notification after login screen is dismissed
+                    [[NSNotificationCenter defaultCenter] postNotificationName:@"WeaponXUserDidLogin" object:nil];
+                }];
+                return;
+            }
+        }
+        
+        // User is already logged in, post notification to update any observers
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"WeaponXUserDidLogin" object:nil];
+    }
+}
+
+- (void)checkUserPlanStatus:(NSString *)token {
+    NSLog(@"[WeaponX] 🔍 Checking user plan status with token: %@", [token substringToIndex:MIN(10, token.length)]);
+    
+    // Check network availability before attempting to fetch plan status
+    APIManager *apiManager = [APIManager sharedManager];
+    if (![apiManager isNetworkAvailable]) {
+        NSLog(@"[WeaponX] ⚠️ Network unavailable when checking plan status - marking for re-verification");
+        
+        // Store that we need to re-verify when network becomes available
+        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+        [defaults setBool:YES forKey:@"WeaponXNeedsReVerification"];
+        [defaults synchronize];
+        
+        // Show offline indicator
+        [self showOfflineModeIndicator];
+        
+        // Check if we have valid cached plan data
+        BOOL hasCachedPlan = [apiManager verifyPlanDataIntegrity];
+        
+        // Get the has active plan flag from user defaults
+        BOOL hasActivePlan = [defaults boolForKey:@"WeaponXHasActivePlan"];
+        
+        if (hasCachedPlan && hasActivePlan) {
+            NSLog(@"[WeaponX] ✅ Offline but valid cached plan data - allowing access");
+            [self removeAccessRestrictions];
+        } else {
+            NSLog(@"[WeaponX] ⚠️ Offline with invalid or no active plan data - restricting access");
+            [self restrictAccessToAccountTabOnly:NO];
+            
+            // Show alert if appropriate
+            [self showOfflinePlanRestrictedAlert];
+        }
+        return;
+    }
+    
+    // If we get here, network is available
+    // Clear the re-verification flag since we're checking now
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    [defaults setBool:NO forKey:@"WeaponXNeedsReVerification"];
+        [defaults synchronize];
+    
+    // Hide offline indicator if visible
+    [self hideOfflineModeIndicator];
+    
+    // Refresh plan data from server
+    [apiManager refreshUserPlan];
+    
+    // Give a short delay to allow the plan data to be fetched and processed
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        // Check current plan integrity
+        BOOL hasPlan = [apiManager verifyPlanDataIntegrity];
+        // Also get the has active plan flag directly
+        BOOL hasActivePlanFlag = [defaults boolForKey:@"WeaponXHasActivePlan"];
+        
+        // Log the plan status for debugging
+        NSLog(@"[WeaponX] 🔍 Plan status check - Integrity Check: %@, HasActivePlan Flag: %@",
+              hasPlan ? @"PASS" : @"FAIL", hasActivePlanFlag ? @"YES" : @"NO");
+        
+        // If either method indicates user has a plan, allow access
+        if (hasPlan || hasActivePlanFlag) {
+            NSLog(@"[WeaponX] ✅ User has active plan - removing access restrictions");
+            // Make sure to update both restriction flags for consistency
+            [defaults setBool:NO forKey:@"WeaponXRestrictedAccess"];
+            [defaults synchronize];
+            objc_setAssociatedObject(self, "WeaponXRestrictedAccess", @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            
+            [self removeAccessRestrictions];
+        } else {
+            NSLog(@"[WeaponX] ⛔ User does not have active plan - restricting access");
+            // Make sure to update both restriction flags for consistency
+            [defaults setBool:YES forKey:@"WeaponXRestrictedAccess"];
+            [defaults synchronize];
+            objc_setAssociatedObject(self, "WeaponXRestrictedAccess", @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            
+            [self restrictAccessToAccountTabOnly:NO];
+        }
+        
+        // Check for inconsistent state as a final verification
+        [self checkForInconsistentState];
+    });
+}
+
+- (void)showOfflineModeIndicator {
+    // Check if we already have an offline indicator view
+    UIView *offlineView = [self.view viewWithTag:9999];
+    if (offlineView) {
+        return; // Already showing
+    }
+    
+    // Create a banner view for offline mode
+    UIView *banner = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, 20)];
+    banner.backgroundColor = [UIColor colorWithRed:0.8 green:0.0 blue:0.0 alpha:0.9];
+    banner.tag = 9999;
+    
+    // Add a label
+    UILabel *label = [[UILabel alloc] initWithFrame:banner.bounds];
+    label.text = @"OFFLINE MODE";
+    label.textColor = [UIColor whiteColor];
+    label.textAlignment = NSTextAlignmentCenter;
+    label.font = [UIFont boldSystemFontOfSize:10];
+    [banner addSubview:label];
+    
+    // Position at top of tab bar (adjust if you have a navigation controller)
+    banner.frame = CGRectMake(0, self.tabBar.frame.origin.y - 20, self.view.bounds.size.width, 20);
+    
+    // Add to view
+    [self.view addSubview:banner];
+    
+    // Animate in
+    banner.alpha = 0;
+    [UIView animateWithDuration:0.3 animations:^{
+        banner.alpha = 1.0;
+    }];
+    
+    NSLog(@"[WeaponX] 🔴 Offline mode indicator displayed");
+}
+
+- (void)hideOfflineModeIndicator {
+    // Find the offline indicator view
+    UIView *offlineView = [self.view viewWithTag:9999];
+    if (!offlineView) {
+        return; // Not showing
+    }
+    
+    // Animate out
+    [UIView animateWithDuration:0.3 animations:^{
+        offlineView.alpha = 0;
+    } completion:^(BOOL finished) {
+        [offlineView removeFromSuperview];
+        NSLog(@"[WeaponX] 🟢 Offline mode indicator removed");
+    }];
+}
+
+- (void)presentLoginScreen {
+    // Create and present login view controller
+    UIViewController *loginVC = [[NSClassFromString(@"LoginViewController") alloc] init];
+    UINavigationController *navController = [[UINavigationController alloc] initWithRootViewController:loginVC];
+    navController.modalPresentationStyle = UIModalPresentationFullScreen;
+    
+    // Present login screen with a slight delay to ensure main UI is ready
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        NSLog(@"[WeaponX] Presenting login screen at startup");
+        [self presentViewController:navController animated:YES completion:nil];
+    });
+}
+
+- (void)handleUserLogout:(NSNotification *)notification {
+    NSLog(@"[WeaponX] TabBarController received logout notification");
+    
+    // Check if this is a forced logout
+    BOOL forceLogin = NO;
+    if (notification.userInfo) {
+        forceLogin = [notification.userInfo[@"force_login"] boolValue];
+    }
+    
+    // Ensure we're on the main thread
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // Check if login screen is already presented
+        if (!forceLogin && 
+            ([self.presentedViewController isKindOfClass:NSClassFromString(@"LoginViewController")] ||
+             ([self.presentedViewController isKindOfClass:[UINavigationController class]] && 
+              [((UINavigationController *)self.presentedViewController).topViewController isKindOfClass:NSClassFromString(@"LoginViewController")]))) {
+            NSLog(@"[WeaponX] Login screen already presented");
+            return;
+        }
+        
+        // If this is a forced logout, dismiss any presented view controller first
+        if (forceLogin && self.presentedViewController) {
+            [self dismissViewControllerAnimated:NO completion:^{
+                [self presentLoginScreen];
+            }];
+        } else {
+            [self presentLoginScreen];
+        }
+    });
+}
+
+- (void)handleUserLogin:(NSNotification *)notification {
+    NSLog(@"[WeaponX] TabBarController received login notification");
+    
+    // Clear the needs relogin flag
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    [defaults setBool:NO forKey:@"WeaponXNeedsRelogin"];
+    [defaults synchronize];
+    
+    // Reset verification status and clear the verification time cache
+    // This ensures we verify the new logged-in user's access permissions
+    [self.tabVerificationStatus setObject:@NO forKey:@"map_tab"];
+    [self.tabVerificationStatus setObject:@NO forKey:@"security_tab"];
+    [self.tabLastVerificationTime removeAllObjects];
+    NSLog(@"[WeaponX] 🔄 LAYER 2: Reset verification cache for new login");
+    
+    NSLog(@"[WeaponX] Cleared WeaponXNeedsRelogin flag after successful login");
+    
+    // No longer automatically present Account view after login
+    // Let users navigate to account tab manually using the UI button
+}
+
+// Add a new method to present the account view controller
+- (void)presentAccountViewController {
+    // Safety check: make sure we have the account nav controller
+    if (!self.accountNavController) {
+        NSLog(@"[WeaponX] ⚠️ Cannot present account view - accountNavController is nil");
+        
+        // Try to create it if it's nil
+        AccountViewController *accountVC = [[NSClassFromString(@"AccountViewController") alloc] init];
+        if (accountVC) {
+            self.accountNavController = [[UINavigationController alloc] initWithRootViewController:accountVC];
+        } else {
+            NSLog(@"[WeaponX] ❌ Critical error: Cannot create AccountViewController");
+            return;
+        }
+    }
+    
+    // Safety check: make sure we're not already presenting it
+    if (self.presentedViewController == self.accountNavController) {
+        NSLog(@"[WeaponX] Account view already presented, not presenting again");
+        return;
+    }
+    
+    // Safety check: use try-catch to prevent crashes
+    @try {
+        NSLog(@"[WeaponX] 📱 Presenting account view controller modally");
+        [self presentViewController:self.accountNavController animated:YES completion:nil];
+    } @catch (NSException *exception) {
+        NSLog(@"[WeaponX] ❌ Exception while presenting account view: %@", exception.description);
+    }
+}
+
+#pragma mark - UITabBarControllerDelegate
+
+- (void)tabBarController:(UITabBarController *)tabBarController didSelectViewController:(UIViewController *)viewController {
+    // Determine which tab was selected
+    NSInteger selectedIndex = tabBarController.selectedIndex;
+    NSString *tabName = @"Unknown";
+    
+    // Get the appropriate tab name based on the selected index
+    switch (selectedIndex) {
+        case 0:
+            tabName = @"Map Tab";
+            break;
+        case 1:
+            tabName = @"Home Tab";
+            break;
+        case 2:
+            tabName = @"Security Tab";
+            break;
+        case 3:
+            tabName = @"Support Tab";
+            break;
+        default:
+            tabName = [NSString stringWithFormat:@"Tab %ld", (long)selectedIndex];
+            break;
+    }
+    
+    NSLog(@"[WeaponX] 🔄 User switched to %@", tabName);
+    
+    // Post a notification about the tab change
+    NSMutableDictionary *userInfo = [NSMutableDictionary dictionary];
+    [userInfo setObject:@(selectedIndex) forKey:@"selectedIndex"];
+    [userInfo setObject:tabName forKey:@"tabName"];
+    [userInfo setObject:viewController forKey:@"viewController"];
+    
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"TabBarSelectionChangedNotification" 
+                                                        object:self 
+                                                      userInfo:userInfo];
+}
+
+- (BOOL)tabBarController:(UITabBarController *)tabBarController shouldSelectViewController:(UIViewController *)viewController {
+    // Always allow access to the Support tab for all users
+    if ([viewController isKindOfClass:[UINavigationController class]]) {
+        UINavigationController *navController = (UINavigationController *)viewController;
+        if ([navController.viewControllers.firstObject isKindOfClass:[SupportViewController class]]) {
+            // Always allow access to the Support tab regardless of restriction status
+            return YES;
+        }
+    }
+    
+    // Account tab (index 4) is always accessible
+    NSInteger selectedIndex = [tabBarController.viewControllers indexOfObject:viewController];
+    if (selectedIndex == 4) { // Account tab index
+        return YES;
+    }
+    
+    // Layer 2 security check for restricted tabs (Map = 0, Security = 2)
+    if (selectedIndex == 0 || selectedIndex == 2) {
+        NSString *tabName = (selectedIndex == 0) ? @"map_tab" : @"security_tab";
+        
+        // Check if we have a successful verification within the past hour
+        NSDate *lastVerificationTime = [self.tabLastVerificationTime objectForKey:tabName];
+        if (lastVerificationTime) {
+            NSTimeInterval timeSinceVerification = [[NSDate date] timeIntervalSinceDate:lastVerificationTime];
+            // If less than 1 hour has passed since last successful verification, skip the verification
+            if (timeSinceVerification < 3600) { // 3600 seconds = 1 hour
+                NSLog(@"[WeaponX] ✅ LAYER 2: Using cached verification for %@ (%.1f minutes old)", 
+                      tabName, timeSinceVerification / 60.0);
+                return YES; // Allow access without re-verification
+            } else {
+                NSLog(@"[WeaponX] 🔄 LAYER 2: Cached verification expired after 1 hour for %@ (%.1f minutes old)", 
+                      tabName, timeSinceVerification / 60.0);
+            }
+        }
+        
+        // Check if we've already verified this tab in this session
+        if (![[self.tabVerificationStatus objectForKey:tabName] boolValue]) {
+            // First time accessing this tab in this session, need to verify
+            [self.tabVerificationStatus setObject:@YES forKey:tabName];
+            
+            // Check network connectivity
+            BOOL isNetworkAvailable = [[APIManager sharedManager] isNetworkAvailable];
+            
+            if (isNetworkAvailable) {
+                // Online: Force immediate server verification for Layer 2
+                [self sendImmediateVerificationAndBlockUntilComplete:tabName forIndex:selectedIndex];
+            } else {
+                // Offline: Use stored verification data with grace period
+                NSLog(@"[WeaponX] ⚠️ Offline mode detected, using Layer 2 Keychain verification");
+                
+                BOOL offlineAccessAllowed = [self verifyLayer2OfflineAccess:tabName];
+                if (!offlineAccessAllowed) {
+                    // Show offline access denied alert
+                    [self showOfflineAccessDeniedAlert:tabName];
+                    return NO;
+                }
+            }
+        }
+        
+        // We need to check if Layer 2 security denied access (which stored the result in Keychain)
+        NSDictionary *verification = [self getVerificationFromKeychainForTab:tabName];
+        if (verification && [verification[@"access_allowed"] boolValue] == NO) {
+            NSLog(@"[WeaponX] 🚫 LAYER 2: Blocked access to tab %@ based on stored verification", tabName);
+            
+            // Show access denied alert with Subscribe button
+            dispatch_async(dispatch_get_main_queue(), ^{
+                UIAlertController *alert = [UIAlertController 
+                    alertControllerWithTitle:@"Access Denied" 
+                    message:@"This feature requires an active subscription. Please subscribe to a plan to access this feature."
+                    preferredStyle:UIAlertControllerStyleAlert];
+                
+                [alert addAction:[UIAlertAction 
+                    actionWithTitle:@"Subscribe to Plan" 
+                    style:UIAlertActionStyleDefault 
+                    handler:^(UIAlertAction * _Nonnull action) {
+                        [self switchToAccountTab];
+                    }]];
+                
+                [alert addAction:[UIAlertAction 
+                    actionWithTitle:@"Cancel" 
+                    style:UIAlertActionStyleCancel 
+                    handler:nil]];
+                
+                [self presentViewController:alert animated:YES completion:nil];
+            });
+            
+            return NO;
+        }
+        
+        // If we made it here, access is allowed - save the verification time
+        [self.tabLastVerificationTime setObject:[NSDate date] forKey:tabName];
+        NSLog(@"[WeaponX] ✅ LAYER 2: Updated verification cache for %@, valid for 1 hour", tabName);
+    }
+    
+    // Layer 1 security check (only if we made it past Layer 2)
+    NSNumber *restrictedAccess = objc_getAssociatedObject(self, "WeaponXRestrictedAccess");
+    BOOL isRestricted = restrictedAccess ? [restrictedAccess boolValue] : NO;
+    
+    // Also check UserDefaults as a backup security measure
+    if (!isRestricted) {
+        isRestricted = [[NSUserDefaults standardUserDefaults] boolForKey:@"WeaponXRestrictedAccess"];
+    }
+    
+    // Apply Layer 1 restrictions if needed
+    if (isRestricted) {
+        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+        
+        // Only allow Support tab (index 3) and Account tab (index 4) for restricted users
+        if (selectedIndex == 0 || selectedIndex == 1 || selectedIndex == 2) {
+            NSLog(@"[WeaponX] 🚫 Blocked access to restricted tab %ld", (long)selectedIndex);
+            
+            // Add detailed diagnostics
+            BOOL hasActivePlan = [defaults boolForKey:@"WeaponXHasActivePlan"];
+            BOOL planIsValid = [[APIManager sharedManager] verifyPlanDataIntegrity];
+            NSLog(@"[WeaponX] 🔍 Restriction diagnostic - HasActivePlan: %@, PlanIsValid: %@",
+                  hasActivePlan ? @"YES" : @"NO", planIsValid ? @"YES" : @"NO");
+            
+            // Attempt recovery if plan should be active
+            if (hasActivePlan && planIsValid) {
+                NSLog(@"[WeaponX] 🔧 Auto-fixing restriction state during tab selection");
+                [self removeAccessRestrictions];
+                return YES; // Allow access
+            }
+            
+            // Create an alert
+            UIAlertController *alert = [UIAlertController 
+                alertControllerWithTitle:@"Access Restricted" 
+                message:@"Please subscribe to a plan to access this feature." 
+                preferredStyle:UIAlertControllerStyleAlert];
+            
+            [alert addAction:[UIAlertAction 
+                actionWithTitle:@"View Plans" 
+                style:UIAlertActionStyleDefault 
+                handler:^(UIAlertAction * _Nonnull action) {
+                    [self switchToAccountTab];
+                }]];
+            
+            // Add a cancel button
+            [alert addAction:[UIAlertAction 
+                actionWithTitle:@"Cancel" 
+                style:UIAlertActionStyleCancel 
+                handler:nil]];
+            
+            [self presentViewController:alert animated:YES completion:nil];
+            return NO;
+        }
+    }
+    
+    return YES;
+}
+
+// Synchronous verification method (blocks UI briefly but ensures security)
+- (void)sendImmediateVerificationAndBlockUntilComplete:(NSString *)tabName forIndex:(NSInteger)index {
+    NSLog(@"[WeaponX] 🔒 LAYER 2: Performing synchronized verification for tab: %@", tabName);
+    
+    // Get user ID
+    NSString *userId = [self getServerUserId];
+    if (!userId) {
+        NSLog(@"[WeaponX] ❌ LAYER 2: No user ID available");
+        return;
+    }
+    
+    // Check network availability first to avoid unnecessary attempts
+    if (![[APIManager sharedManager] isNetworkAvailable]) {
+        NSLog(@"[WeaponX] 🧪 LAYER 2: Network unavailable, using cached verification if available");
+        
+        // Check if we have a valid cached verification
+        NSDictionary *cachedVerification = [self getVerificationFromKeychainForTab:tabName];
+        if (cachedVerification) {
+            NSDate *verificationDate = [self getVerificationDateForTab:tabName];
+            if (verificationDate) {
+                NSTimeInterval timeSinceVerification = [[NSDate date] timeIntervalSinceDate:verificationDate];
+                // Use cached verification if it's less than 24 hours old
+                if (timeSinceVerification < 24 * 60 * 60) {
+                    NSLog(@"[WeaponX] 🔐 LAYER 2: Using cached verification (%.1f hours old)", timeSinceVerification / 3600.0);
+                    return;
+                } else {
+                    NSLog(@"[WeaponX] ⚠️ LAYER 2: Cached verification expired (%.1f hours old)", timeSinceVerification / 3600.0);
+                }
+            }
+        }
+        
+        NSLog(@"[WeaponX] 🧪 LAYER 2: Connection error: The Internet connection appears to be offline.");
+        return;
+    }
+    
+    // Create a URL with a timestamp to prevent caching
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"https://hydra.weaponx.us/access-verification.php"]];
+    [request setHTTPMethod:@"POST"];
+    [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    [request setTimeoutInterval:10.0]; // Set a reasonable timeout
+    
+    // Add timestamp to avoid caching issues
+    NSTimeInterval timestamp = [[NSDate date] timeIntervalSince1970];
+    
+    // Build payload with enhanced security
+    NSMutableDictionary *payload = [NSMutableDictionary dictionaryWithDictionary:@{
+        @"user_id": userId,
+        @"tab_name": tabName,
+        @"access_time": [NSString stringWithFormat:@"%.6f", timestamp]
+    }];
+    
+    // Add device identifiers for more secure verification
+    NSString *deviceUUID = [[[UIDevice currentDevice] identifierForVendor] UUIDString];
+    if (deviceUUID) {
+        [payload setObject:deviceUUID forKey:@"device_uuid"];
+    }
+    
+    // Get device model
+    size_t size;
+    sysctlbyname("hw.machine", NULL, &size, NULL, 0);
+    char *machine = malloc(size);
+    sysctlbyname("hw.machine", machine, &size, NULL, 0);
+    NSString *deviceModel = [NSString stringWithCString:machine encoding:NSUTF8StringEncoding];
+    free(machine);
+    
+    if (deviceModel) {
+        [payload setObject:deviceModel forKey:@"device_model"];
+    }
+    
+    // Add a signature for the request
+    NSMutableString *dataToSign = [NSMutableString string];
+    [dataToSign appendFormat:@"%@:%@:%@", userId, tabName, [NSString stringWithFormat:@"%.6f", timestamp]];
+    NSString *requestSignature = [self hmacSignatureForString:dataToSign withDeviceInfo:YES];
+    [payload setObject:requestSignature forKey:@"request_signature"];
+    
+    // Convert to JSON
+    NSError *error = nil;
+    NSData *jsonData = [NSJSONSerialization dataWithJSONObject:payload options:0 error:&error];
+    
+    if (error) {
+        NSLog(@"[WeaponX] ❌ LAYER 2: Failed to create JSON: %@", error);
+        return;
+    }
+    
+    [request setHTTPBody:jsonData];
+    
+    // Create a semaphore to block until request completes
+    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+    
+    // Create the session task
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        // Always ensure semaphore is signaled at end of completion handler
+        dispatch_block_t cleanup = ^{
+            dispatch_semaphore_signal(semaphore);
+        };
+        
+        // Handle errors
+        if (error) {
+            NSLog(@"[WeaponX] 🧪 LAYER 2: Connection error: %@", error.localizedDescription);
+            
+            // Check if we have a valid cached verification to use as fallback
+            NSDictionary *cachedVerification = [self getVerificationFromKeychainForTab:tabName];
+            if (cachedVerification) {
+                NSDate *verificationDate = [self getVerificationDateForTab:tabName];
+                if (verificationDate) {
+                    NSTimeInterval timeSinceVerification = [[NSDate date] timeIntervalSinceDate:verificationDate];
+                    // Use cached verification if it's less than 24 hours old
+                    if (timeSinceVerification < 24 * 60 * 60) {
+                        NSLog(@"[WeaponX] 🔐 LAYER 2: Using cached verification as fallback (%.1f hours old)", timeSinceVerification / 3600.0);
+                    }
+                }
+            }
+            
+            cleanup();
+            return;
+        }
+        
+        // Check HTTP status
+        NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)response;
+        if (httpResponse.statusCode < 200 || httpResponse.statusCode >= 300) {
+            NSLog(@"[WeaponX] ❌ LAYER 2: HTTP error: %ld", (long)httpResponse.statusCode);
+            
+            // For 403 Forbidden responses, this means server explicitly denied access
+            // We should store this denial in the keychain
+            if (httpResponse.statusCode == 403) {
+                NSLog(@"[WeaponX] 🚫 LAYER 2: Server explicitly denied access with 403 response");
+                
+                // Create a denial verification response
+                NSDictionary *denialResponse = @{
+                    @"status": @"error",
+                    @"access_allowed": @NO,
+                    @"message": @"Access denied by server",
+                    @"server_time": [NSString stringWithFormat:@"%.0f", [[NSDate date] timeIntervalSince1970]],
+                    @"response_code": @(httpResponse.statusCode)
+                };
+                
+                // Store the denial in keychain
+                [self storeVerificationInKeychain:denialResponse forTab:tabName];
+            }
+            
+            cleanup();
+            return;
+        }
+        
+        // No data returned
+        if (!data) {
+            NSLog(@"[WeaponX] ❌ LAYER 2: No data returned from server");
+            cleanup();
+            return;
+        }
+        
+        // Parse the JSON response
+        NSError *jsonError = nil;
+        NSDictionary *responseDict = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
+        
+        if (jsonError) {
+            NSLog(@"[WeaponX] ❌ LAYER 2: Failed to parse JSON: %@", jsonError);
+            cleanup();
+            return;
+        }
+        
+        // Update our server time reference if present in the response
+        if (responseDict[@"server_time"]) {
+            [self updateServerTimeReference:responseDict[@"server_time"]];
+        }
+        
+        // Check for success status
+        NSString *status = responseDict[@"status"];
+        if (![status isEqualToString:@"success"]) {
+            NSLog(@"[WeaponX] ❌ LAYER 2: Server returned error status: %@", status ?: @"unknown");
+            cleanup();
+            return;
+        }
+        
+        // Store the verification result in the keychain
+        [self storeVerificationInKeychain:responseDict forTab:tabName];
+        
+        // Update our verification cache for 1-hour expiration if access allowed
+        if ([responseDict[@"access_allowed"] boolValue]) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self.tabLastVerificationTime setObject:[NSDate date] forKey:tabName];
+                NSLog(@"[WeaponX] ✅ LAYER 2: Updated verification time cache for %@ (valid for 1 hour)", tabName);
+            });
+        }
+        
+        // Log completion of the verification
+        NSLog(@"[WeaponX] 🔄 LAYER 2: Synchronized verification completed for tab: %@", tabName);
+        
+        // Signal that we're done
+        cleanup();
+    }];
+    
+    [task resume];
+    
+    // Wait for the request to complete (with a reasonable timeout)
+    dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC); // 10 second timeout
+    long result = dispatch_semaphore_wait(semaphore, timeout);
+    if (result != 0) {
+        NSLog(@"[WeaponX] ⚠️ LAYER 2: Verification request timed out for tab: %@", tabName);
+    }
+}
+
+- (void)startNotificationUpdateTimer {
+    // Check for notifications immediately
+    [self updateNotificationBadge];
+    
+    // Then set up timer to check periodically
+    [NSTimer scheduledTimerWithTimeInterval:60.0
+                                     target:self
+                                   selector:@selector(updateNotificationBadge)
+                                   userInfo:nil
+                                    repeats:YES];
+}
+
+- (void)updateNotificationBadge {
+    // Only update badge if user is authenticated
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSString *authToken = [defaults objectForKey:@"WeaponXAuthToken"];
+    
+    if (!authToken) {
+        return;
+    }
+    
+    [[APIManager sharedManager] getNotificationCount:^(NSInteger unreadBroadcasts, NSInteger unreadTicketReplies, NSInteger totalCount, NSError *error) {
+        if (error) {
+            NSLog(@"Error fetching notification count: %@", error);
+            return;
+        }
+        
+        dispatch_async(dispatch_get_main_queue(), ^{
+            // Find the Support tab
+            UINavigationController *supportNav = self.viewControllers[3];
+            
+            if (totalCount > 0) {
+                supportNav.tabBarItem.badgeValue = [NSString stringWithFormat:@"%ld", (long)totalCount];
+                supportNav.tabBarItem.badgeColor = [UIColor systemRedColor];
+            } else {
+                supportNav.tabBarItem.badgeValue = nil;
+            }
+        });
+    }];
+}
+
+- (void)showAccessRestrictedAlert {
+    // Implement the logic to show an alert explaining why access is restricted
+    NSLog(@"[WeaponX] 🚫 Access to Support tab is restricted");
+}
+
+// Method to restrict access to account tab only for users without a plan
+- (void)restrictAccessToAccountTabOnly:(BOOL)isResuming {
+    NSLog(@"[WeaponX] 🔒 Restricting access to account tab only");
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    
+    // Store the fact that access is currently restricted
+    [defaults setBool:YES forKey:@"WeaponXAccessRestricted"];
+    [defaults synchronize];
+    
+    // Get current tab index
+    NSInteger currentTabIndex = self.selectedIndex;
+    
+    // Check if we're online
+    APIManager *apiManager = [APIManager sharedManager];
+    BOOL isOnline = [apiManager isNetworkAvailable];
+    
+    // Show offline indicator if needed
+    if (!isOnline) {
+        [self showOfflineModeIndicator];
+    } else {
+        // Hide offline indicator if it exists
+        [self hideOfflineModeIndicator];
+    }
+    
+    // Store which tabs are restricted
+    for (NSInteger i = 0; i < self.viewControllers.count; i++) {
+        if (i != 4) { // 4 is AccountViewController
+            // Store which tabs are restricted using associated objects
+            objc_setAssociatedObject(self.viewControllers[i], "WeaponXTabRestricted", @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    }
+    
+    // Special case for Home tab (index 0) - if we're online AND resuming, allow staying on Home tab
+    if (currentTabIndex == 0 && isResuming && isOnline) {
+        NSLog(@"[WeaponX] 🏠 User is online and on Home tab while resuming - allowing access");
+        return;
+    }
+    
+    // If user is on Account tab, no change needed
+    if (currentTabIndex == 4) { // Account tab index
+        NSLog(@"[WeaponX] 👤 User already on Account tab - no redirection needed");
+        return;
+    }
+    
+    // If we're here, user needs to be redirected to Account tab
+    NSLog(@"[WeaponX] 🔄 Redirecting to Account tab (from tab %ld)", (long)currentTabIndex);
+    self.selectedIndex = 4; // Switch to Account tab
+    
+    // Store the fact that we've restricted access for alert purposes
+    objc_setAssociatedObject(self, "WeaponXRestrictedAccess", @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    
+    // Show an alert if this is the first time we're restricting access
+    BOOL hasShownRestrictedAlert = [defaults boolForKey:@"WeaponXHasShownRestrictedAlert"];
+    if (!hasShownRestrictedAlert) {
+        [self showAccessRestrictedAlert];
+        [defaults setBool:YES forKey:@"WeaponXHasShownRestrictedAlert"];
+        [defaults synchronize];
+    }
+}
+
+// Method to remove access restrictions when a user has an active plan
+- (void)removeAccessRestrictions {
+    NSLog(@"[WeaponX] 🔓 Removing access restrictions - user has active plan");
+    
+    // Update NSUserDefaults - clear all restriction-related flags
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    [defaults setBool:NO forKey:@"WeaponXAccessRestricted"];
+    [defaults setBool:NO forKey:@"WeaponXRestrictedAccess"]; // Ensure this is also cleared
+    [defaults synchronize];
+    
+    // Clear restrictions on all tabs
+    for (NSInteger i = 0; i < self.viewControllers.count; i++) {
+        objc_setAssociatedObject(self.viewControllers[i], "WeaponXTabRestricted", @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    
+    // Clear the restriction status in the tab bar controller
+    objc_setAssociatedObject(self, "WeaponXRestrictedAccess", @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    
+    // Check network status to determine whether to show offline indicator
+    APIManager *apiManager = [APIManager sharedManager];
+    if (![apiManager isNetworkAvailable]) {
+        [self showOfflineModeIndicator];
+    } else {
+        [self hideOfflineModeIndicator];
+    }
+    
+    // Notify rest of app that restrictions were removed
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"WeaponXAccessRestrictionsRemoved" object:nil];
+}
+
+// Improved method to handle network status changes
+- (void)handleNetworkStatusChanged:(NSNotification *)notification {
+    // Extract isOnline status from notification user info
+    NSDictionary *userInfo = notification.userInfo;
+    BOOL isOnline = [[userInfo objectForKey:@"isOnline"] boolValue];
+    
+    // Use static variable to track debouncing
+    static NSDate *lastNetworkStatusUpdate = nil;
+    static BOOL isProcessingNetworkChange = NO;
+    
+    // Get current time
+    NSDate *now = [NSDate date];
+    
+    // Check if this notification came too soon after another one (debounce)
+    if (lastNetworkStatusUpdate) {
+        NSTimeInterval timeSinceLastUpdate = [now timeIntervalSinceDate:lastNetworkStatusUpdate];
+        if (timeSinceLastUpdate < 2.0) { // 2 second debounce period
+            NSLog(@"[WeaponX] 🔄 Debouncing network status change - too soon after previous update");
+            return;
+        }
+    }
+    
+    // Check if already processing a network change
+    if (isProcessingNetworkChange) {
+        NSLog(@"[WeaponX] ⚠️ Already processing a network change, ignoring this notification");
+        return;
+    }
+    
+    // Set flag to prevent concurrent processing
+    isProcessingNetworkChange = YES;
+    
+    // Update last update time
+    lastNetworkStatusUpdate = now;
+    
+    if (isOnline) {
+        NSLog(@"[WeaponX] 🌐 Network is now online - updating UI and verifying plan status");
+        
+        // Show toast message for connection restored
+        [self showToastMessage:@"Connection Restored" success:YES];
+        
+        // First update UI to show online status
+        [self refreshUIForNetworkStatus:isOnline];
+        
+        // Verify plan data in a slightly delayed fashion to avoid race conditions
+        // This gives time for any other network status handlers to complete
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            // Only refresh if we're still online after the delay
+            if ([[APIManager sharedManager] isNetworkAvailable]) {
+                NSLog(@"[WeaponX] 🔄 After delay, network is still available - proceeding with plan verification");
+                
+                // Get the auth token
+                NSString *token = [[TokenManager sharedInstance] getCurrentToken];
+                
+                if (token) {
+                    // Refresh plan data with the current token
+                    [[APIManager sharedManager] refreshPlanData:token];
+                }
+                
+                // After the plan data has been refreshed, check if we need to update access restrictions
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    NSLog(@"[WeaponX] 🔍 Verifying plan data integrity after refresh");
+                    BOOL planIsValid = [self verifyPlanDataIntegrity];
+                    
+                    // Get current plan status
+                    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+                    BOOL hasActivePlan = [defaults boolForKey:@"WeaponXHasActivePlan"];
+                    
+                    NSLog(@"[WeaponX] 🔍 Post-refresh check - Plan valid: %@, Has active plan: %@", 
+                          planIsValid ? @"YES" : @"NO", hasActivePlan ? @"YES" : @"NO");
+                    
+                    // Update restrictions based on plan status
+                    if (planIsValid && hasActivePlan) {
+                        [self removeAccessRestrictions];
+                    } else {
+                        [self restrictAccessToAccountTabOnly:NO];
+                    }
+                    
+                    // Reset processing flag
+                    isProcessingNetworkChange = NO;
+                });
+            } else {
+                NSLog(@"[WeaponX] ⚠️ Network became unavailable during delay - aborting plan verification");
+                isProcessingNetworkChange = NO;
+            }
+        });
+    } else {
+        NSLog(@"[WeaponX] 🌐 Network is now offline - updating UI accordingly");
+        
+        // Show toast message for no internet connection
+        [self showToastMessage:@"No Internet Connection" success:NO];
+        
+        // Update UI components that depend on network status
+        [self refreshUIForNetworkStatus:isOnline];
+        
+        // Check if we should show offline grace period alert
+        [self checkAndShowOfflineGraceAlert];
+        
+        // Reset the processing flag after a short delay
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            isProcessingNetworkChange = NO;
+        });
+    }
+}
+
+// Method to handle specific "network became available" notification
+- (void)handleNetworkBecameAvailable:(NSNotification *)notification {
+    NSLog(@"[WeaponX] 🌐 Network became available - refreshing required data");
+    
+    // Use static property to debounce multiple quick network changes
+    static BOOL isRefreshing = NO;
+    
+    if (isRefreshing) {
+        NSLog(@"[WeaponX] ⚠️ Already refreshing data after network change, skipping");
+        return;
+    }
+    
+    isRefreshing = YES;
+    
+    // Add a slight delay to avoid race conditions with other network notifications
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        // Check if network is still available
+        if (![[APIManager sharedManager] isNetworkAvailable]) {
+            NSLog(@"[WeaponX] ⚠️ Network became unavailable during delay - aborting refresh");
+            isRefreshing = NO;
+            return;
+        }
+        
+        // Get token from TokenManager
+        NSString *token = [[TokenManager sharedInstance] getCurrentToken];
+        
+        if (token) {
+            // Refresh plan data with the current token
+            [[APIManager sharedManager] refreshPlanData:token];
+            
+            // Update UI state after a small delay to allow refresh to complete
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                // Update restrictions based on refreshed plan data
+                NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+                BOOL hasActivePlan = [defaults boolForKey:@"WeaponXHasActivePlan"];
+                
+                if (hasActivePlan) {
+                    NSLog(@"[WeaponX] ✅ Plan refresh complete - user has active plan");
+                    [self removeAccessRestrictions];
+                } else {
+                    NSLog(@"[WeaponX] ⚠️ Plan refresh complete - user does not have active plan");
+                    [self restrictAccessToAccountTabOnly:NO];
+                }
+                
+                // Reset the refreshing flag
+                isRefreshing = NO;
+            });
+        } else {
+            NSLog(@"[WeaponX] ⚠️ No valid token found for plan refresh");
+            isRefreshing = NO;
+        }
+    });
+}
+
+- (void)handleNetworkBecameUnavailable:(NSNotification *)notification {
+    NSLog(@"[WeaponX] 🌐 Network became unavailable");
+    
+    // Clear any pending online checks
+    static BOOL isProcessing = NO;
+    
+    if (isProcessing) {
+        NSLog(@"[WeaponX] ⚠️ Already processing network unavailable, skipping");
+        return;
+    }
+    
+    isProcessing = YES;
+    
+    // Show a toast message to inform user
+    [self showToastMessage:@"No Internet Connection" withDuration:2.0 isSuccess:NO];
+    
+    // Check if we need to update the UI for offline mode
+    [self refreshUIForNetworkStatus:NO];
+    
+    // Verify plan data integrity for offline mode
+    BOOL planIsValid = [[APIManager sharedManager] verifyPlanDataIntegrity];
+    
+    // Get current plan status
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    BOOL hasActivePlan = [defaults boolForKey:@"WeaponXHasActivePlan"];
+    
+    NSLog(@"[WeaponX] 🔍 Going offline check - Plan valid: %@, Has active plan: %@", 
+          planIsValid ? @"YES" : @"NO", hasActivePlan ? @"YES" : @"NO");
+    
+    // The offline grace period check is handled in the APIManager
+    // But we should check if we need to update restrictions
+    if (!planIsValid || !hasActivePlan) {
+        // Show offline plan restricted alert if needed
+        [self showOfflinePlanRestrictedAlert];
+        
+        // Restrict access to account tab
+        [self restrictAccessToAccountTabOnly:NO];
+    }
+    
+    // Reset processing flag after a short delay
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        isProcessing = NO;
+    });
+}
+
+// Simple convenience method that calls the full implementation
+- (void)showToastMessage:(NSString *)message success:(BOOL)success {
+    [self showToastMessage:message withDuration:(success ? 3.0 : 2.0) isSuccess:success];
+}
+
+// Enhanced method to show a beautiful toast message
+- (void)showToastMessage:(NSString *)message withDuration:(CGFloat)duration isSuccess:(BOOL)isSuccess {
+    // Create container view for better styling
+    UIView *toastContainer = [[UIView alloc] init];
+    
+    // Set background color based on success/failure
+    if (isSuccess) {
+        toastContainer.backgroundColor = [UIColor colorWithRed:0.0 green:0.6 blue:0.0 alpha:0.95];
+    } else {
+        toastContainer.backgroundColor = [UIColor colorWithRed:0.8 green:0.0 blue:0.0 alpha:0.95];
+    }
+    
+    toastContainer.layer.cornerRadius = 20;
+    toastContainer.clipsToBounds = YES;
+    toastContainer.alpha = 0.0;
+    
+    // Add drop shadow for better visibility
+    toastContainer.layer.shadowColor = [UIColor blackColor].CGColor;
+    toastContainer.layer.shadowOffset = CGSizeMake(0, 4);
+    toastContainer.layer.shadowOpacity = 0.3;
+    toastContainer.layer.shadowRadius = 5;
+    
+    // Create icon view (checkmark for success, wifi.slash for error)
+    UIImageView *iconView = [[UIImageView alloc] init];
+    
+    // Use SF Symbols if available (iOS 13+)
+    if (@available(iOS 13.0, *)) {
+        NSString *iconName = isSuccess ? @"checkmark.circle.fill" : @"wifi.slash";
+        UIImage *icon = [UIImage systemImageNamed:iconName];
+        iconView.image = [icon imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    } else {
+        // Fallback for older iOS versions - use a simple circle view
+        UIView *circleView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 24, 24)];
+        circleView.backgroundColor = [UIColor whiteColor];
+        circleView.layer.cornerRadius = 12;
+        [toastContainer addSubview:circleView];
+    }
+    
+    iconView.tintColor = [UIColor whiteColor];
+    iconView.contentMode = UIViewContentModeScaleAspectFit;
+    
+    // Create toast message label with improved typography
+    UILabel *toastLabel = [[UILabel alloc] init];
+    toastLabel.textColor = [UIColor whiteColor];
+    toastLabel.textAlignment = NSTextAlignmentLeft;
+    toastLabel.text = message;
+    
+    // Use system font for better readability
+    if (@available(iOS 13.0, *)) {
+        toastLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+    } else {
+        toastLabel.font = [UIFont boldSystemFontOfSize:15];
+    }
+    
+    // Get the key window
+    UIWindow *window = nil;
+    
+    // Modern way (iOS 13+)
+    if (@available(iOS 13.0, *)) {
+        NSSet *connectedScenes = [UIApplication sharedApplication].connectedScenes;
+        for (UIScene *scene in connectedScenes) {
+            if (scene.activationState == UISceneActivationStateForegroundActive && 
+                [scene isKindOfClass:[UIWindowScene class]]) {
+                UIWindowScene *windowScene = (UIWindowScene *)scene;
+                for (UIWindow *candidateWindow in windowScene.windows) {
+                    if (candidateWindow.isKeyWindow) {
+                        window = candidateWindow;
+                        break;
+                    }
+                }
+                if (window) break;
+            }
+        }
+        
+        // Fallback to first window if no key window found
+        if (!window && connectedScenes.count > 0) {
+            UIScene *scene = [connectedScenes anyObject];
+            if ([scene isKindOfClass:[UIWindowScene class]]) {
+                UIWindowScene *windowScene = (UIWindowScene *)scene;
+                if (windowScene.windows.count > 0) {
+                    window = windowScene.windows.firstObject;
+                }
+            }
+        }
+    } else {
+        // Older way (pre-iOS 13)
+        #pragma clang diagnostic push
+        #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        window = [UIApplication sharedApplication].keyWindow;
+        #pragma clang diagnostic pop
+    }
+    
+    if (!window) {
+        NSLog(@"[WeaponX] ⚠️ Cannot show toast - no window found");
+        return;
+    }
+    
+    // Add views to container
+    [toastContainer addSubview:iconView];
+    [toastContainer addSubview:toastLabel];
+    [window addSubview:toastContainer];
+    
+    // Setup auto layout
+    toastContainer.translatesAutoresizingMaskIntoConstraints = NO;
+    iconView.translatesAutoresizingMaskIntoConstraints = NO;
+    toastLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    
+    // Layout constraints for container - position at top of screen with proper margins
+    [NSLayoutConstraint activateConstraints:@[
+        [toastContainer.centerXAnchor constraintEqualToAnchor:window.centerXAnchor],
+        [toastContainer.topAnchor constraintEqualToAnchor:window.safeAreaLayoutGuide.topAnchor constant:20],
+        [toastContainer.widthAnchor constraintLessThanOrEqualToAnchor:window.widthAnchor constant:-40],
+        [toastContainer.heightAnchor constraintGreaterThanOrEqualToConstant:44]
+    ]];
+    
+    // Layout constraints for icon - proper spacing and size
+    [NSLayoutConstraint activateConstraints:@[
+        [iconView.leadingAnchor constraintEqualToAnchor:toastContainer.leadingAnchor constant:15],
+        [iconView.centerYAnchor constraintEqualToAnchor:toastContainer.centerYAnchor],
+        [iconView.widthAnchor constraintEqualToConstant:24],
+        [iconView.heightAnchor constraintEqualToConstant:24]
+    ]];
+    
+    // Layout constraints for label - proper spacing and alignment
+    [NSLayoutConstraint activateConstraints:@[
+        [toastLabel.leadingAnchor constraintEqualToAnchor:iconView.trailingAnchor constant:10],
+        [toastLabel.trailingAnchor constraintEqualToAnchor:toastContainer.trailingAnchor constant:-15],
+        [toastLabel.topAnchor constraintEqualToAnchor:toastContainer.topAnchor constant:12],
+        [toastLabel.bottomAnchor constraintEqualToAnchor:toastContainer.bottomAnchor constant:-12]
+    ]];
+    
+    // Use spring animation for a nicer effect
+    [UIView animateWithDuration:0.5 delay:0 usingSpringWithDamping:0.6 initialSpringVelocity:0.5 options:UIViewAnimationOptionCurveEaseOut animations:^{
+        toastContainer.alpha = 1.0;
+        
+        // Add a slight pop effect
+        toastContainer.transform = CGAffineTransformMakeScale(1.05, 1.05);
+    } completion:^(BOOL finished) {
+        [UIView animateWithDuration:0.2 animations:^{
+            toastContainer.transform = CGAffineTransformIdentity;
+        }];
+        
+        // Hide after delay
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(duration * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [UIView animateWithDuration:0.3 animations:^{
+                toastContainer.alpha = 0.0;
+                toastContainer.transform = CGAffineTransformMakeScale(0.95, 0.95);
+            } completion:^(BOOL finished) {
+                [toastContainer removeFromSuperview];
+            }];
+        });
+    }];
+}
+
+// Add this method to the viewDidLoad or similar initialization method
+- (void)setupPlanDataObserver {
+    // Register for plan data updates
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handlePlanDataUpdated:)
+                                                 name:@"WeaponXPlanDataUpdated"
+                                               object:nil];
+    
+    // Also register for network status changes
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleNetworkBecameAvailable:)
+                                                 name:@"WeaponXNetworkBecameAvailable"
+                                               object:nil];
+    
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleNetworkBecameUnavailable:)
+                                                 name:@"WeaponXNetworkBecameUnavailable"
+                                               object:nil];
+}
+
+// Handle plan data updates
+- (void)handlePlanDataUpdated:(NSNotification *)notification {
+    NSLog(@"[WeaponX] 📊 TabBarController received plan data update");
+    
+    // Check if user has an active plan
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    BOOL hasActivePlan = [defaults boolForKey:@"WeaponXHasActivePlan"];
+    
+    if (hasActivePlan) {
+        NSLog(@"[WeaponX] ✅ User has active plan - removing access restrictions");
+        [self removeAccessRestrictions];
+    } else {
+        NSLog(@"[WeaponX] ⚠️ User does not have active plan - restricting access");
+        [self restrictAccessToAccountTabOnly:NO];
+    }
+}
+
+// Add this method to update notification badges on refresh
+- (void)updateNotificationBadges {
+    [self updateNotificationBadge];
+}
+
+// Helper method to get the top-most view controller
+- (UIViewController *)topMostViewController {
+    UIViewController *topVC = self;
+    while (topVC.presentedViewController) {
+        topVC = topVC.presentedViewController;
+    }
+    
+    // If it's a tab bar controller, get the selected view controller
+    if ([topVC isKindOfClass:[UITabBarController class]]) {
+        UITabBarController *tabController = (UITabBarController *)topVC;
+        topVC = tabController.selectedViewController;
+    }
+    
+    // If it's a navigation controller, get the top view controller
+    if ([topVC isKindOfClass:[UINavigationController class]]) {
+        UINavigationController *navController = (UINavigationController *)topVC;
+        topVC = navController.topViewController;
+    }
+    
+    return topVC;
+}
+
+// Method to show alert for plan restriction in offline mode
+- (void)showOfflinePlanRestrictedAlert {
+    // Check if we've already shown this alert
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    BOOL hasShownOfflineAlert = [defaults boolForKey:@"WeaponXHasShownOfflinePlanAlert"];
+    
+    if (hasShownOfflineAlert) {
+        return; // Don't show again if already shown
+    }
+    
+    // Create and show the alert
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIAlertController *alert = [UIAlertController 
+            alertControllerWithTitle:@"Access Restricted" 
+            message:@"You don't have an active plan. Access to some features is restricted in offline mode. Please connect to the internet and subscribe to a plan." 
+            preferredStyle:UIAlertControllerStyleAlert];
+        
+        [alert addAction:[UIAlertAction 
+            actionWithTitle:@"OK" 
+            style:UIAlertActionStyleDefault 
+            handler:nil]];
+        
+        [self presentViewController:alert animated:YES completion:nil];
+        
+        // Mark alert as shown
+        [defaults setBool:YES forKey:@"WeaponXHasShownOfflinePlanAlert"];
+        [defaults synchronize];
+    });
+}
+
+// Method to check for inconsistent state between plan status and restrictions
+- (void)checkForInconsistentState {
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    BOOL hasActivePlan = [defaults boolForKey:@"WeaponXHasActivePlan"];
+    BOOL isRestricted = [defaults boolForKey:@"WeaponXRestrictedAccess"];
+    BOOL objcRestricted = [objc_getAssociatedObject(self, "WeaponXRestrictedAccess") boolValue];
+    BOOL planIsValid = [[APIManager sharedManager] verifyPlanDataIntegrity];
+    
+    // Log the state for debugging
+    NSLog(@"[WeaponX] 🔍 State check - HasActivePlan: %@, PlanIsValid: %@, IsRestricted(UserDefaults): %@, IsRestricted(ObjC): %@",
+          hasActivePlan ? @"YES" : @"NO", 
+          planIsValid ? @"YES" : @"NO",
+          isRestricted ? @"YES" : @"NO",
+          objcRestricted ? @"YES" : @"NO");
+    
+    // Case 1: Inconsistent restriction flags between UserDefaults and objc_associatedObject
+    if (isRestricted != objcRestricted) {
+        NSLog(@"[WeaponX] 🔧 Fixing inconsistent restriction flags");
+        // Set both to the same value based on plan status
+        if (hasActivePlan && planIsValid) {
+            [self removeAccessRestrictions];
+        } else {
+            [self restrictAccessToAccountTabOnly:NO];
+        }
+    }
+    // Case 2: User has active plan but is still restricted
+    else if (hasActivePlan && planIsValid && (isRestricted || objcRestricted)) {
+        NSLog(@"[WeaponX] 🔧 Fixing inconsistent state - user has plan but is restricted");
+        [self removeAccessRestrictions];
+    }
+    // Case 3: User doesn't have active plan but isn't restricted
+    else if ((!hasActivePlan || !planIsValid) && (!isRestricted && !objcRestricted)) {
+        NSLog(@"[WeaponX] 🔧 Fixing inconsistent state - user doesn't have plan but isn't restricted");
+        [self restrictAccessToAccountTabOnly:NO];
+    }
+}
+
+// Also add to applicationDidBecomeActive method if it exists
+- (void)applicationDidBecomeActive:(NSNotification *)notification {
+    NSLog(@"[WeaponX] 📱 Application became active");
+    
+    // We're removing the automatic Layer 2 security refresh on app activation
+    // to avoid lagging when the app opens. Layer 2 security will now only be
+    // checked when the user taps on a secured tab (Map or Security tabs)
+    
+    // Just check for inconsistent state when app becomes active
+    [self checkForInconsistentState];
+    
+    // Check if this is a fresh launch or resume
+    static BOOL isFirstActivation = YES;
+    
+    // Check if user is online
+    APIManager *apiManager = [APIManager sharedManager];
+    BOOL isOnline = [apiManager isNetworkAvailable];
+    
+    // Get user authentication status
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSString *authToken = [defaults objectForKey:@"WeaponXAuthToken"];
+    
+    if (isFirstActivation && isOnline && authToken) {
+        NSLog(@"[WeaponX] 🔄 First activation with network - checking plan status from server silently");
+        
+        // No need to check plan data integrity immediately since we're refreshing from server
+        // Just refresh plan from server
+        [apiManager refreshUserPlan];
+        
+        // Check the plan status after a short delay to allow the refresh to complete
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            // Check if the refresh changed our plan status
+            BOOL hasActivePlan = [defaults boolForKey:@"WeaponXHasActivePlan"];
+            BOOL planIsValid = [apiManager verifyPlanDataIntegrity];
+            BOOL isRestricted = [defaults boolForKey:@"WeaponXRestrictedAccess"];
+            
+            NSLog(@"[WeaponX] 🔍 Silent plan check - HasActivePlan: %@, PlanIsValid: %@, IsRestricted: %@",
+                  hasActivePlan ? @"YES" : @"NO", 
+                  planIsValid ? @"YES" : @"NO",
+                  isRestricted ? @"YES" : @"NO");
+            
+            // Update restrictions based on the plan check
+            if (hasActivePlan && planIsValid) {
+                if (isRestricted) {
+                    NSLog(@"[WeaponX] ✅ User has active plan but was restricted - removing restrictions");
+                    [self removeAccessRestrictions];
+                }
+            } else if (!hasActivePlan || !planIsValid) {
+                if (!isRestricted) {
+                    NSLog(@"[WeaponX] ⚠️ User doesn't have active plan but wasn't restricted - adding restrictions");
+                    [self restrictAccessToAccountTabOnly:NO];
+                }
+                
+                // If no plan data or invalid plan data, automatically open the account tab
+                // This helps users get updated data without requiring manual navigation
+                NSLog(@"[WeaponX] 📱 No valid plan detected - automatically showing account tab to get updated data");
+                
+                // Give a short delay before switching to account tab to ensure UI is ready
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    [self switchToAccountTab];
+                });
+            }
+        });
+    }
+    
+    // Reset verification status when app becomes active so that when the user taps on
+    // a secure tab next, it will perform a fresh verification check
+    self.tabVerificationStatus = [NSMutableDictionary dictionaryWithDictionary:@{
+        @"map_tab": @NO,
+        @"security_tab": @NO
+    }];
+    
+    // Mark that we've handled the first activation
+    isFirstActivation = NO;
+}
+
+// Add implementations for missing methods
+- (BOOL)verifyPlanDataIntegrity {
+    // Call the APIManager's verifyPlanDataIntegrity method
+    BOOL result = [[APIManager sharedManager] verifyPlanDataIntegrity];
+    
+    NSLog(@"[WeaponX] 🔍 Tab Bar verifying plan data integrity - Result: %@", result ? @"PASS" : @"FAIL");
+    
+    // Get current plan status
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    BOOL hasActivePlan = [defaults boolForKey:@"WeaponXHasActivePlan"];
+    
+    // If verification passes and user has active plan, remove access restrictions
+    if (result && hasActivePlan) {
+        [self removeAccessRestrictions];
+    }
+    // If verification fails or user doesn't have active plan, restrict access
+    else if (!result || !hasActivePlan) {
+        [self restrictAccessToAccountTabOnly:NO];
+    }
+    
+    return result;
+}
+
+- (void)refreshUIForNetworkStatus:(BOOL)isOnline {
+    NSLog(@"[WeaponX] 🔄 Refreshing UI for network status change - Online: %@", isOnline ? @"YES" : @"NO");
+    
+    // Update offline indicator
+    if (isOnline) {
+        [self hideOfflineModeIndicator];
+    } else {
+        [self showOfflineModeIndicator];
+    }
+    
+    // Refresh visible view controllers
+    for (UIViewController *viewController in self.viewControllers) {
+        if ([viewController isViewLoaded] && viewController.view.window) {
+            // If view controller implements refresh method, call it
+            if ([viewController respondsToSelector:@selector(refreshView)]) {
+                [viewController performSelector:@selector(refreshView)];
+            }
+            
+            // If it's a navigation controller, also try to refresh its visible view controller
+            if ([viewController isKindOfClass:[UINavigationController class]]) {
+                UIViewController *topVC = [(UINavigationController *)viewController topViewController];
+                if ([topVC respondsToSelector:@selector(refreshView)]) {
+                    [topVC performSelector:@selector(refreshView)];
+                }
+            }
+        }
+    }
+}
+
+- (void)checkAndShowOfflineGraceAlert {
+    // Check if we've already shown this alert
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    BOOL hasShownGraceAlert = [defaults boolForKey:@"WeaponXOfflineGraceAlertShown"];
+    
+    if (hasShownGraceAlert) {
+        return; // Don't show again if already shown
+    }
+    
+    // Check if we're within grace period
+    BOOL withinGracePeriod = [[APIManager sharedManager] isWithinOfflineGracePeriod];
+    
+    if (!withinGracePeriod) {
+        // Only show if not within grace period
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UIAlertController *alert = [UIAlertController 
+                alertControllerWithTitle:@"Offline Grace Period Expired" 
+                message:@"Your offline access period has expired. Please connect to the internet to continue using all features." 
+                preferredStyle:UIAlertControllerStyleAlert];
+            
+            [alert addAction:[UIAlertAction 
+                actionWithTitle:@"OK" 
+                style:UIAlertActionStyleDefault 
+                handler:nil]];
+            
+            [self presentViewController:alert animated:YES completion:nil];
+            
+            // Mark alert as shown
+            [defaults setBool:YES forKey:@"WeaponXOfflineGraceAlertShown"];
+            [defaults synchronize];
+        });
+    }
+}
+
+#pragma mark - Keychain Security Methods
+
+// Store verification data in Keychain
+- (void)storeVerificationInKeychain:(NSDictionary *)verificationData forTab:(NSString *)tabName {
+    // Create a secure dictionary for storage
+    NSMutableDictionary *secureDict = [NSMutableDictionary dictionaryWithDictionary:verificationData];
+    
+    // Add tab name and timestamp if not already present
+    if (!secureDict[@"tab_name"]) {
+        [secureDict setObject:tabName forKey:@"tab_name"];
+    }
+    
+    // Always update the timestamp to current time to ensure accurate grace period tracking
+    [secureDict setObject:@([[NSDate date] timeIntervalSince1970]) forKey:@"timestamp"];
+    
+    // Add device UUID for additional security
+    NSString *deviceUUID = [[[UIDevice currentDevice] identifierForVendor] UUIDString];
+    if (deviceUUID) {
+        [secureDict setObject:deviceUUID forKey:@"device_uuid"];
+    }
+    
+    // Create data to sign - include critical verification fields
+    NSMutableString *dataToSign = [NSMutableString string];
+    
+    // Include all security-critical fields in the signature
+    [dataToSign appendFormat:@"%@:", tabName];
+    [dataToSign appendFormat:@"%@:", secureDict[@"timestamp"]];
+    [dataToSign appendFormat:@"%@:", deviceUUID ?: @"no_uuid"];
+    [dataToSign appendFormat:@"%@:", secureDict[@"access_allowed"] ? @"allowed" : @"denied"];
+    
+    // Include user ID if available for additional binding
+    NSString *userId = secureDict[@"user_id"] ?: [[TokenManager sharedInstance] getServerUserId];
+    if (userId) {
+        [dataToSign appendFormat:@"%@:", userId];
+    }
+    
+    // Add server time if available
+    if (secureDict[@"server_time"]) {
+        [dataToSign appendFormat:@"%@:", secureDict[@"server_time"]];
+    }
+    
+    // Generate the signature with device info
+    NSString *signature = [self hmacSignatureForString:dataToSign withDeviceInfo:YES];
+    
+    // Store the signature in the dictionary
+    [secureDict setObject:signature forKey:@"wx_signature"];
+    
+    // Store a verification version to handle signature format changes in the future
+    [secureDict setObject:@(2) forKey:@"wx_sig_version"];
+    
+    // Add a random nonce to prevent replay attacks
+    CFUUIDRef uuid = CFUUIDCreate(NULL);
+    NSString *nonce = CFBridgingRelease(CFUUIDCreateString(NULL, uuid));
+    CFRelease(uuid);
+    [secureDict setObject:nonce forKey:@"nonce"];
+    
+    // Convert dictionary to data
+    NSError *error = nil;
+    NSData *data = [NSJSONSerialization dataWithJSONObject:secureDict options:0 error:&error];
+    
+    if (error) {
+        NSLog(@"[WeaponX] ❌ LAYER 2: Failed to serialize verification data: %@", error);
+        return;
+    }
+    
+    // Create a keygen-based unique key for this tab (more secure than fixed string)
+    NSString *keychainKey = [NSString stringWithFormat:@"WX_V%@_%@", 
+                              [self hmacSignatureForString:tabName withDeviceInfo:NO],
+                              tabName];
+    
+    // Get the obfuscated service name
+    NSString *serviceName = [self keychainServiceName];
+    
+    // Keychain query dictionary
+    NSMutableDictionary *query = [NSMutableDictionary dictionary];
+    [query setObject:(__bridge id)kSecClassGenericPassword forKey:(__bridge id)kSecClass];
+    [query setObject:keychainKey forKey:(__bridge id)kSecAttrAccount];
+    [query setObject:serviceName forKey:(__bridge id)kSecAttrService];
+    
+    // First check if the item already exists
+    OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, NULL);
+    
+    if (status == errSecSuccess) {
+        // Item exists, delete it
+        status = SecItemDelete((__bridge CFDictionaryRef)query);
+        
+        if (status != errSecSuccess) {
+            NSLog(@"[WeaponX] ❌ LAYER 2: Failed to delete existing Keychain item: %d", (int)status);
+        }
+    }
+    
+    // Now add the new item
+    [query setObject:data forKey:(__bridge id)kSecValueData];
+    
+    // Add security attributes to make the item more secure
+    [query setObject:(__bridge id)kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly 
+                forKey:(__bridge id)kSecAttrAccessible];
+    
+    // Set additional security attribute for app-bound data (stronger protection)
+    if (@available(iOS 13.0, *)) {
+        [query setObject:@YES forKey:(__bridge id)kSecUseDataProtectionKeychain];
+    }
+    
+    status = SecItemAdd((__bridge CFDictionaryRef)query, NULL);
+    
+    if (status != errSecSuccess) {
+        NSLog(@"[WeaponX] ❌ LAYER 2: Failed to store verification in Keychain: %d", (int)status);
+    } else {
+        NSLog(@"[WeaponX] ✅ LAYER 2: Stored verification in Keychain for tab: %@", tabName);
+        
+        // For diagnostic purposes, log the verification result
+        if (verificationData[@"access_allowed"] != nil) {
+            BOOL accessAllowed = [verificationData[@"access_allowed"] boolValue];
+            NSLog(@"[WeaponX] 🔐 LAYER 2: Stored verification result: Access %@", 
+                  accessAllowed ? @"ALLOWED" : @"DENIED");
+            
+            // If verification data includes a server timestamp, log it
+            if (verificationData[@"server_time"]) {
+                NSLog(@"[WeaponX] 🕒 LAYER 2: Server verification time: %@", verificationData[@"server_time"]);
+            }
+        }
+    }
+}
+
+// Get verification data from Keychain
+- (NSDictionary *)getVerificationFromKeychainForTab:(NSString *)tabName {
+    // Try the new format first
+    NSString *newKeychainKey = [NSString stringWithFormat:@"WX_V%@_%@", 
+                              [self hmacSignatureForString:tabName withDeviceInfo:NO],
+                              tabName];
+    
+    // Get the obfuscated service name
+    NSString *serviceName = [self keychainServiceName];
+    
+    NSMutableDictionary *query = [NSMutableDictionary dictionary];
+    [query setObject:(__bridge id)kSecClassGenericPassword forKey:(__bridge id)kSecClass];
+    [query setObject:newKeychainKey forKey:(__bridge id)kSecAttrAccount];
+    [query setObject:serviceName forKey:(__bridge id)kSecAttrService];
+    [query setObject:@YES forKey:(__bridge id)kSecReturnData];
+    
+    CFTypeRef result = NULL;
+    OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, &result);
+    
+    // If not found, try legacy format for backward compatibility
+    if (status == errSecItemNotFound) {
+        NSString *legacyKeychainKey = [NSString stringWithFormat:@"WeaponX_L2_Verification_%@", tabName];
+        [query setObject:legacyKeychainKey forKey:(__bridge id)kSecAttrAccount];
+        // Try with both the new obfuscated service name and legacy service name
+        status = SecItemCopyMatching((__bridge CFDictionaryRef)query, &result);
+        
+        // If still not found with obfuscated service name, try old service name
+        if (status == errSecItemNotFound) {
+            [query setObject:@"WeaponX" forKey:(__bridge id)kSecAttrService];
+            status = SecItemCopyMatching((__bridge CFDictionaryRef)query, &result);
+        }
+    }
+    
+    if (status != errSecSuccess) {
+        if (status != errSecItemNotFound) {
+            NSLog(@"[WeaponX] ❌ LAYER 2: Failed to read Keychain: %d", (int)status);
+        }
+        return nil;
+    }
+    
+    NSData *data = (__bridge_transfer NSData *)result;
+    
+    if (!data) {
+        NSLog(@"[WeaponX] ❌ LAYER 2: No verification data found in Keychain for tab: %@", tabName);
+        return nil;
+    }
+    
+    NSError *error = nil;
+    NSDictionary *verificationData = [NSJSONSerialization JSONObjectWithData:data options:0 error:&error];
+    
+    if (error) {
+        NSLog(@"[WeaponX] ❌ LAYER 2: Failed to parse verification data from Keychain: %@", error);
+        return nil;
+    }
+    
+    NSLog(@"[WeaponX] 🔐 LAYER 2: Retrieved verification from Keychain for tab %@", tabName);
+    return verificationData;
+}
+
+// Clear verification data from Keychain for a specific tab
+- (BOOL)clearVerificationFromKeychainForTab:(NSString *)tabName {
+    BOOL success = YES;
+    
+    // Get the obfuscated service name
+    NSString *serviceName = [self keychainServiceName];
+    
+    // Clear using new key format
+    NSString *newKeychainKey = [NSString stringWithFormat:@"WX_V%@_%@", 
+                              [self hmacSignatureForString:tabName withDeviceInfo:NO],
+                              tabName];
+    
+    NSMutableDictionary *newQuery = [NSMutableDictionary dictionary];
+    [newQuery setObject:(__bridge id)kSecClassGenericPassword forKey:(__bridge id)kSecClass];
+    [newQuery setObject:newKeychainKey forKey:(__bridge id)kSecAttrAccount];
+    [newQuery setObject:serviceName forKey:(__bridge id)kSecAttrService];
+    
+    OSStatus newStatus = SecItemDelete((__bridge CFDictionaryRef)newQuery);
+    
+    if (newStatus != errSecSuccess && newStatus != errSecItemNotFound) {
+        NSLog(@"[WeaponX] ❌ LAYER 2: Failed to clear new Keychain item: %d", (int)newStatus);
+        success = NO;
+    }
+    
+    // Also clear legacy key format for complete cleanup
+    NSString *legacyKeychainKey = [NSString stringWithFormat:@"WeaponX_L2_Verification_%@", tabName];
+    
+    NSMutableDictionary *legacyQuery = [NSMutableDictionary dictionary];
+    [legacyQuery setObject:(__bridge id)kSecClassGenericPassword forKey:(__bridge id)kSecClass];
+    [legacyQuery setObject:legacyKeychainKey forKey:(__bridge id)kSecAttrAccount];
+    [legacyQuery setObject:serviceName forKey:(__bridge id)kSecAttrService];
+    
+    OSStatus legacyStatus = SecItemDelete((__bridge CFDictionaryRef)legacyQuery);
+    
+    if (legacyStatus != errSecSuccess && legacyStatus != errSecItemNotFound) {
+        NSLog(@"[WeaponX] ❌ LAYER 2: Failed to clear legacy Keychain item with new service name: %d", (int)legacyStatus);
+        success = NO;
+    }
+    
+    // Also try with the old hard-coded service name for complete cleanup
+    legacyQuery = [NSMutableDictionary dictionary];
+    [legacyQuery setObject:(__bridge id)kSecClassGenericPassword forKey:(__bridge id)kSecClass];
+    [legacyQuery setObject:legacyKeychainKey forKey:(__bridge id)kSecAttrAccount];
+    [legacyQuery setObject:@"WeaponX" forKey:(__bridge id)kSecAttrService];
+    
+    legacyStatus = SecItemDelete((__bridge CFDictionaryRef)legacyQuery);
+    
+    if (legacyStatus != errSecSuccess && legacyStatus != errSecItemNotFound) {
+        NSLog(@"[WeaponX] ❌ LAYER 2: Failed to clear legacy Keychain item with old service name: %d", (int)legacyStatus);
+        success = NO;
+    }
+    
+    NSLog(@"[WeaponX] 🧹 LAYER 2: Cleared verification from Keychain for tab: %@", tabName);
+    return success;
+}
+
+// Clear verification data from Keychain for all tabs
+- (void)clearAllVerificationsFromKeychain {
+    // Define all tab names
+    NSArray *tabNames = @[@"map_tab", @"security_tab", @"home_tab", @"support_tab"];
+    
+    for (NSString *tabName in tabNames) {
+        [self clearVerificationFromKeychainForTab:tabName];
+    }
+    
+    NSLog(@"[WeaponX] 🧹 LAYER 2: Cleared all verification data from Keychain");
+}
+
+// Method for testing Layer 2 security
+- (void)testLayer2Security {
+    // Only clear verification data if we're online and can refresh it
+    APIManager *apiManager = [APIManager sharedManager];
+    BOOL isOnline = [apiManager isNetworkAvailable];
+    
+    if (isOnline) {
+        NSLog(@"[WeaponX] 🧪 LAYER 2: Security test initiated - refreshing verification data");
+    } else {
+        NSLog(@"[WeaponX] 🧪 LAYER 2: Security test in offline mode - preserving existing verification data");
+        return; // Don't proceed with testing in offline mode to preserve data
+    }
+    
+    // Get user ID for verification
+    NSString *userId = [[TokenManager sharedInstance] getServerUserId];
+    if (!userId) {
+        userId = [[NSUserDefaults standardUserDefaults] stringForKey:@"WeaponXUserID"];
+    }
+    
+    if (!userId) {
+        NSLog(@"[WeaponX] ⚠️ LAYER 2: Unable to test - no user ID available");
+        return;
+    }
+    
+    NSLog(@"[WeaponX] 🧪 LAYER 2: Testing with user ID: %@", userId);
+    
+    // First test basic server communication
+    [self testServerCommunication];
+    
+    // Wait a short time for server test to complete
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        // Check Layer 1 security status
+        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+        BOOL hasActivePlan = [defaults boolForKey:@"WeaponXHasActivePlan"];
+        BOOL planIntegrityValid = [[APIManager sharedManager] verifyPlanDataIntegrity];
+        
+        NSLog(@"[WeaponX] 🧪 LAYER 2: Layer 1 status - HasActivePlan: %@, PlanIntegrityValid: %@", 
+              hasActivePlan ? @"YES" : @"NO", planIntegrityValid ? @"YES" : @"NO");
+        
+        // Now test verification for protected tabs
+        [self sendImmediateAccessVerification:@"map_tab" forIndex:0];
+        
+        // Wait briefly before testing security tab
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self sendImmediateAccessVerification:@"security_tab" forIndex:2];
+        });
+    });
+}
+
+#pragma mark - Diagnostic Methods
+
+// Method to test server communication
+- (void)testServerCommunication {
+    // Get user ID from TokenManager
+    NSString *userId = [self getServerUserId];
+    if (!userId) {
+        NSLog(@"[WeaponX] 🧪 LAYER 2: No user ID available for testing");
+        return;
+    }
+    
+    NSLog(@"[WeaponX] 🧪 LAYER 2: Testing with user ID: %@", userId);
+    NSLog(@"[WeaponX] 🧪 LAYER 2: Testing server communication");
+    
+    // Create a URL with a timestamp to prevent caching
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"https://hydra.weaponx.us/access-verification.php"]];
+    [request setHTTPMethod:@"POST"];
+    [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    
+    // Test payload for map tab
+    NSDictionary *payload = @{
+        @"user_id": userId,
+        @"tab_name": @"map_tab",
+        @"verification_type": @"test",
+        @"access_time": [NSString stringWithFormat:@"%f", [[NSDate date] timeIntervalSince1970]]
+    };
+    
+    NSError *error;
+    NSData *jsonData = [NSJSONSerialization dataWithJSONObject:payload options:0 error:&error];
+    
+    if (!jsonData) {
+        NSLog(@"[WeaponX] 🧪 LAYER 2: JSON serialization error: %@", error.localizedDescription);
+        return;
+    }
+    
+    [request setHTTPBody:jsonData];
+    
+    NSLog(@"[WeaponX] 🧪 LAYER 2: Test payload: %@", payload);
+    NSLog(@"[WeaponX] 🧪 LAYER 2: Test request sent, waiting for response...");
+    
+    [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        if (error) {
+            NSLog(@"[WeaponX] 🧪 LAYER 2: Connection error: %@", error.localizedDescription);
+            return;
+        }
+        
+        NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)response;
+        NSLog(@"[WeaponX] 🧪 LAYER 2: Server test response status: %ld", (long)httpResponse.statusCode);
+        
+        if (data) {
+            NSError *jsonError;
+            NSDictionary *responseDict = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
+            
+            if (responseDict) {
+                NSLog(@"[WeaponX] 🧪 LAYER 2: Test response: %@", responseDict);
+            } else {
+                NSString *responseString = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+                NSLog(@"[WeaponX] 🧪 LAYER 2: Server response (not JSON): %@", responseString);
+            }
+        }
+        
+        NSLog(@"[WeaponX] 🧪 LAYER 2: Server communication test completed");
+    }] resume];
+}
+
+// Method to test Keychain functionality
+- (void)testKeychainFunctionality {
+    NSLog(@"[WeaponX] 🧪 LAYER 2: Starting Keychain functionality test");
+    
+    // Test data
+    NSDictionary *testData = @{
+        @"test_id": @"keychain_test_001",
+        @"access_allowed": @YES,
+        @"plan_type": @"premium",
+        @"test_timestamp": @([[NSDate date] timeIntervalSince1970])
+    };
+    
+    // Test tabs
+    NSArray *testTabs = @[@"map_tab", @"security_tab"];
+    
+    // 1. Clear any existing test data
+    for (NSString *tab in testTabs) {
+        [self clearVerificationFromKeychainForTab:tab];
+        NSLog(@"[WeaponX] 🧪 LAYER 2: Cleared test data for tab: %@", tab);
+    }
+    
+    // 2. Store test data
+    for (NSString *tab in testTabs) {
+        [self storeVerificationInKeychain:testData forTab:tab];
+        NSLog(@"[WeaponX] 🧪 LAYER 2: Stored test data for tab: %@", tab);
+    }
+    
+    // 3. Retrieve and verify
+    for (NSString *tab in testTabs) {
+        NSDictionary *retrieved = [self getVerificationFromKeychainForTab:tab];
+        if (retrieved) {
+            BOOL dataMatches = [retrieved[@"test_id"] isEqualToString:testData[@"test_id"]];
+            NSLog(@"[WeaponX] 🧪 LAYER 2: Retrieved test data for tab %@: %@", tab, retrieved);
+            NSLog(@"[WeaponX] 🧪 LAYER 2: Data integrity check: %@", dataMatches ? @"PASSED" : @"FAILED");
+        } else {
+            NSLog(@"[WeaponX] ❌ LAYER 2: Failed to retrieve test data for tab: %@", tab);
+        }
+    }
+    
+    // 4. Run verification test on map tab
+    NSLog(@"[WeaponX] 🧪 LAYER 2: Testing tab verification for map_tab");
+    [self sendImmediateAccessVerification:@"map_tab" forIndex:0];
+    
+    NSLog(@"[WeaponX] 🧪 LAYER 2: Keychain functionality test completed");
+}
+
+#pragma mark - System Methods
+
+// Method for manually resetting and testing Layer 2 verification
+- (void)resetAndTestLayer2Security {
+    // Clear all cached verifications
+    [self clearAllVerificationsFromKeychain];
+    NSLog(@"[WeaponX] 🔄 LAYER 2: Manual reset - cleared all cached verifications");
+    
+    // Check for active plan in Layer 1
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    BOOL hasActivePlan = [defaults boolForKey:@"WeaponXHasActivePlan"];
+    BOOL planIsValid = [[APIManager sharedManager] verifyPlanDataIntegrity];
+    
+    NSLog(@"[WeaponX] 🔍 LAYER 2: Manual reset check - Layer 1 status - HasActivePlan: %@, PlanIsValid: %@", 
+          hasActivePlan ? @"YES" : @"NO", planIsValid ? @"YES" : @"NO");
+    
+    // Show diagnostic toast
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSString *message = [NSString stringWithFormat:@"Layer 2 Reset: Plan %@", 
+                             (hasActivePlan && planIsValid) ? @"Active" : @"Inactive"];
+        
+        [self showToastMessage:message success:(hasActivePlan && planIsValid)];
+    });
+    
+    // Now trigger fresh verification requests
+    [self testLayer2Security];
+    
+    // Request direct test of server communication
+    [self testServerCommunication];
+}
+
+// Helper method for handling verification failures
+- (void)denyAccessDueToVerificationFailure:(NSString *)tabName withMessage:(NSString *)message {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSLog(@"[WeaponX] 🔒 LAYER 2: Denying access to %@ due to verification failure: %@", tabName, message);
+        
+        // Force navigation back to account tab
+        [self switchToAccountTab];
+        
+        // Show verification alert
+        [self showServerVerificationAlertWithMessage:message];
+    });
+}
+
+// Add enhanced alert for server verification with custom message
+- (void)showServerVerificationAlertWithMessage:(NSString *)message {
+    UIAlertController *alert = [UIAlertController 
+                               alertControllerWithTitle:@"Server Verification Failed" 
+                               message:[NSString stringWithFormat:@"%@ Please check your subscription status.", message] 
+                               preferredStyle:UIAlertControllerStyleAlert];
+    
+    [alert addAction:[UIAlertAction actionWithTitle:@"View Plans" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        [self switchToAccountTab];
+    }]];
+    
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+// Keep the original method for backward compatibility
+- (void)showServerVerificationAlert {
+    [self showServerVerificationAlertWithMessage:@"Our server has detected this account doesn't have permission to access this feature."];
+}
+
+// New method for immediate server verification
+- (void)sendImmediateAccessVerification:(NSString *)tabName forIndex:(NSInteger)index {
+    // Call our new synchronous method instead
+    [self sendImmediateVerificationAndBlockUntilComplete:tabName forIndex:index];
+}
+
+// Helper method to get the user ID
+- (NSString *)getServerUserId {
+    NSString *userId = [[TokenManager sharedInstance] getServerUserId];
+    if (!userId) {
+        userId = [[NSUserDefaults standardUserDefaults] stringForKey:@"WeaponXUserID"];
+    }
+    return userId;
+}
+
+// We need to add a new method for offline Layer 2 verification:
+
+// Layer 2 offline verification - checks Keychain data with grace period
+- (BOOL)verifyLayer2OfflineAccess:(NSString *)tabName {
+    NSLog(@"[WeaponX] 🔒 LAYER 2: Performing offline verification check for tab: %@", tabName);
+    
+    // Get verification data from Keychain
+    NSDictionary *verification = [self getVerificationFromKeychainForTab:tabName];
+    
+    if (!verification) {
+        NSLog(@"[WeaponX] ⚠️ LAYER 2: No stored verification data found in offline mode");
+        return NO; // No verification data, deny access
+    }
+    
+    // Check when the verification was performed
+    NSNumber *timestamp = verification[@"timestamp"];
+    NSDate *verificationDate = timestamp ? [NSDate dateWithTimeIntervalSince1970:[timestamp doubleValue]] : nil;
+    
+    if (!verificationDate) {
+        NSLog(@"[WeaponX] ⚠️ LAYER 2: Missing timestamp in stored verification");
+        return NO; // No timestamp, deny access as we cannot validate age
+    }
+    
+    // Verify the signature matches to prevent tampering with verification data
+    NSNumber *sigVersion = verification[@"wx_sig_version"];
+    NSString *storedSignature = verification[@"wx_signature"];
+    
+    if (sigVersion && [sigVersion intValue] >= 2 && storedSignature) {
+        // Create data to sign - use same format as in storage method
+        NSMutableString *dataToSign = [NSMutableString string];
+        [dataToSign appendFormat:@"%@:", tabName];
+        [dataToSign appendFormat:@"%@:", verification[@"timestamp"]];
+        [dataToSign appendFormat:@"%@:", verification[@"device_uuid"] ?: @"no_uuid"];
+        [dataToSign appendFormat:@"%@:", verification[@"access_allowed"] ? @"allowed" : @"denied"];
+        
+        // Include user ID if available
+        NSString *userId = verification[@"user_id"] ?: [[TokenManager sharedInstance] getServerUserId];
+        if (userId) {
+            [dataToSign appendFormat:@"%@:", userId];
+        }
+        
+        // Add server time if available
+        if (verification[@"server_time"]) {
+            [dataToSign appendFormat:@"%@:", verification[@"server_time"]];
+        }
+        
+        // Generate the expected signature
+        NSString *expectedSignature = [self hmacSignatureForString:dataToSign withDeviceInfo:YES];
+        
+        // Compare signatures
+        if (![storedSignature isEqualToString:expectedSignature]) {
+            NSLog(@"[WeaponX] ❌ LAYER 2: Signature verification failed - data may have been tampered with");
+            return NO; // Signatures don't match, deny access
+        }
+        
+        NSLog(@"[WeaponX] ✓ LAYER 2: Signature verification passed");
+    } else {
+        // If there's no signature version 2, check device UUID for backward compatibility
+        NSString *storedDeviceUUID = verification[@"device_uuid"];
+        NSString *currentDeviceUUID = [[[UIDevice currentDevice] identifierForVendor] UUIDString];
+        
+        if (storedDeviceUUID && currentDeviceUUID && ![storedDeviceUUID isEqualToString:currentDeviceUUID]) {
+            NSLog(@"[WeaponX] ❌ LAYER 2: Device UUID mismatch - data may be from another device");
+            return NO; // Device UUID doesn't match, deny access
+        }
+    }
+    
+    // Calculate time since last verification
+    NSTimeInterval timeSinceVerification = [[NSDate date] timeIntervalSinceDate:verificationDate];
+    
+    // Get configurable grace period (fallback to 24 hours if not configured)
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSTimeInterval gracePeriod = [defaults doubleForKey:@"WeaponXOfflineGracePeriod"];
+    if (gracePeriod <= 0) {
+        gracePeriod = 24 * 60 * 60; // Default 24 hours in seconds
+    }
+    
+    // Check if we're within the grace period
+    if (timeSinceVerification > gracePeriod) {
+        NSLog(@"[WeaponX] ❌ LAYER 2: Offline grace period expired (%.1f hours since verification)", 
+              timeSinceVerification / 3600.0);
+        return NO; // Grace period expired, deny access
+    }
+    
+    // Check for signs of time manipulation using SecureTimeManager
+    if ([[NSUserDefaults standardUserDefaults] boolForKey:@"WeaponXTimeManipulationDetected"]) {
+        NSLog(@"[WeaponX] ❌ LAYER 2: Time manipulation detected - denying access");
+        return NO;
+    }
+    
+    // Check the access_allowed flag in the verification data
+    id accessAllowedValue = verification[@"access_allowed"];
+    BOOL accessAllowed = NO;
+    
+    if ([accessAllowedValue isKindOfClass:[NSNumber class]]) {
+        accessAllowed = [accessAllowedValue boolValue];
+    }
+    
+    NSLog(@"[WeaponX] %@ LAYER 2 Offline check (from %.1f hours ago): Access %@", 
+          accessAllowed ? @"✅" : @"🚫",
+          timeSinceVerification / 3600.0,
+          accessAllowed ? @"ALLOWED" : @"DENIED");
+          
+    return accessAllowed;
+}
+
+- (void)showOfflineAccessDeniedAlert:(NSString *)tabName {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIAlertController *alert = [UIAlertController 
+            alertControllerWithTitle:@"Offline Access Expired" 
+            message:@"Your offline access period has expired. Please connect to the internet to verify your subscription."
+            preferredStyle:UIAlertControllerStyleAlert];
+        
+        [alert addAction:[UIAlertAction 
+            actionWithTitle:@"View Account" 
+            style:UIAlertActionStyleDefault 
+            handler:^(UIAlertAction * _Nonnull action) {
+                [self switchToAccountTab];
+            }]];
+        
+        [alert addAction:[UIAlertAction 
+            actionWithTitle:@"Cancel" 
+            style:UIAlertActionStyleCancel 
+            handler:nil]];
+        
+        [self presentViewController:alert animated:YES completion:nil];
+    });
+}
+
+- (void)networkStatusDidChange:(NSNotification *)notification {
+    NSDictionary *userInfo = notification.userInfo;
+    BOOL isOnline = [userInfo[@"isOnline"] boolValue];
+    
+    if (isOnline) {
+        NSLog(@"[WeaponX] 🌐 Network became available - refreshing Layer 2 verification");
+        [self hideOfflineModeIndicator];
+        
+        // Clear "needs reverification" flag
+        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+        [defaults setBool:NO forKey:@"WeaponXNeedsReVerification"];
+        [defaults synchronize];
+        
+        // Refresh Layer 2 verification data for critical tabs
+        [self refreshAllLayer2Verifications];
+    } else {
+        NSLog(@"[WeaponX] 🔌 Network became unavailable - showing offline indicator");
+        [self showOfflineModeIndicator];
+        
+        // Set flag for re-verification when network returns
+        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+        [defaults setBool:YES forKey:@"WeaponXNeedsReVerification"];
+        [defaults synchronize];
+    }
+}
+
+// New method to refresh Layer 2 verification data for all protected tabs
+- (void)refreshAllLayer2Verifications {
+    // Don't refresh if user is not logged in
+    NSString *userId = [self getServerUserId];
+    if (!userId) {
+        NSLog(@"[WeaponX] ⚠️ Cannot refresh Layer 2 verifications - no user ID");
+        return;
+    }
+    
+    // Check network availability before attempting refresh
+    if (![[APIManager sharedManager] isNetworkAvailable]) {
+        NSLog(@"[WeaponX] ⚠️ Network unavailable - cannot refresh Layer 2 verifications");
+        
+        // Instead of clearing verifications when offline, just log and use existing cached data
+        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+        [defaults setObject:[NSDate date] forKey:@"WeaponXLastOfflineVerificationAttempt"];
+        [defaults synchronize];
+        return;
+    }
+    
+    // Define all protected tabs that need verification
+    NSArray *protectedTabs = @[@"map_tab", @"security_tab"];
+    
+    // Only clear existing verifications if we're online and able to refresh
+    for (NSString *tabName in protectedTabs) {
+        NSDictionary *currentVerification = [self getVerificationFromKeychainForTab:tabName];
+        NSDate *verificationDate = [self getVerificationDateForTab:tabName];
+        
+        // Only clear if we have no verification or it's older than 48 hours
+        BOOL shouldClear = NO;
+        if (!currentVerification) {
+            shouldClear = YES;
+        } else if (verificationDate) {
+            NSTimeInterval timeSinceVerification = [[NSDate date] timeIntervalSinceDate:verificationDate];
+            if (timeSinceVerification > 48 * 60 * 60) { // 48 hours
+                shouldClear = YES;
+            }
+        }
+        
+        if (shouldClear) {
+            [self clearVerificationFromKeychainForTab:tabName];
+            NSLog(@"[WeaponX] 🧹 Cleared existing verification for tab: %@", tabName);
+        } else {
+            NSLog(@"[WeaponX] ✅ Keeping recent verification for tab: %@", tabName);
+        }
+    }
+    
+    // Refresh them one by one
+    for (NSInteger i = 0; i < protectedTabs.count; i++) {
+        NSString *tabName = protectedTabs[i];
+        NSInteger tabIndex = (i == 0) ? 0 : 2; // map_tab = 0, security_tab = 2
+        
+        // Get fresh verification data with a slight delay between requests to avoid overloading
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            NSLog(@"[WeaponX] 🔄 Refreshing Layer 2 verification for tab: %@", tabName);
+            
+            // Check network again right before sending the request
+            if ([[APIManager sharedManager] isNetworkAvailable]) {
+                [self sendImmediateVerificationAndBlockUntilComplete:tabName forIndex:tabIndex];
+            } else {
+                NSLog(@"[WeaponX] ⚠️ Network became unavailable - skipping verification for tab: %@", tabName);
+            }
+        });
+    }
+}
+
+// Generate HMAC signature for string data with enhanced security
+- (NSString *)hmacSignatureForString:(NSString *)string withDeviceInfo:(BOOL)includeDeviceInfo {
+    // Use a mix of device identifiers as the secret key base
+    NSMutableString *secretBase = [NSMutableString string];
+    
+    // Use the device's name (can't be easily spoofed)
+    [secretBase appendString:[[UIDevice currentDevice] name]];
+    
+    // Add the device's identifierForVendor
+    NSString *deviceUUID = [[[UIDevice currentDevice] identifierForVendor] UUIDString];
+    if (deviceUUID) {
+        [secretBase appendString:deviceUUID];
+    }
+    
+    // Add the device model identifier
+    size_t size;
+    sysctlbyname("hw.machine", NULL, &size, NULL, 0);
+    char *machine = malloc(size);
+    sysctlbyname("hw.machine", machine, &size, NULL, 0);
+    NSString *deviceModel = [NSString stringWithCString:machine encoding:NSUTF8StringEncoding];
+    free(machine);
+    
+    if (deviceModel) {
+        [secretBase appendString:deviceModel];
+    }
+    
+    // Generate dynamic salt instead of hardcoded value
+    NSMutableString *dynamicSalt = [NSMutableString string];
+    
+    // Part 1: Derive from bundle identifier
+    NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
+    if (bundleID) {
+        // Extract specific characters based on device identifiers to make it dynamic
+        NSUInteger charIndex = MIN(3, bundleID.length - 1);
+        if (deviceUUID) {
+            // Use last character in UUID to determine which characters to use
+            NSString *lastChar = [deviceUUID substringFromIndex:deviceUUID.length - 1];
+            unsigned int value;
+            [[NSScanner scannerWithString:lastChar] scanHexInt:&value];
+            charIndex = value % MAX(1, bundleID.length);
+        }
+        [dynamicSalt appendString:[bundleID substringFromIndex:charIndex]];
+    }
+    
+    // Part 2: Add device-specific entropy
+    NSInteger entropy = (NSInteger)([[NSDate date] timeIntervalSince1970] / 86400); // Days since epoch
+    if (deviceModel) {
+        // Add device model length as another entropy source
+        entropy += deviceModel.length;
+    }
+    [dynamicSalt appendFormat:@"%ld", (long)entropy];
+    
+    // Part 3: Add obscured app-specific salt
+    // Obfuscate with character manipulation to prevent easy static extraction
+    char obfuscatedSalt[] = {
+        'W' ^ 0x7F, 'e' ^ 0x1A, 'a' ^ 0x3B, 'p' ^ 0x2C, 
+        'o' ^ 0x5D, 'n' ^ 0x4E, 'X' ^ 0x6F, '_' ^ 0x0A,
+        'S' ^ 0x17, 'a' ^ 0x3B, 'l' ^ 0x4C, 't' ^ 0x5F,
+        '_' ^ 0x0A, 'v' ^ 0x7B, '3' ^ 0x1C
+    };
+    
+    NSMutableString *deobfuscatedSalt = [NSMutableString string];
+    for (int i = 0; i < sizeof(obfuscatedSalt)/sizeof(obfuscatedSalt[0]); i++) {
+        // XOR back to get the original character
+        char c = obfuscatedSalt[i] ^ (0x7F & (i + 0x1A));
+        [deobfuscatedSalt appendFormat:@"%c", c];
+    }
+    
+    [dynamicSalt appendString:deobfuscatedSalt];
+    
+    // Add the dynamic salt
+    [secretBase appendString:dynamicSalt];
+    
+    // Add more device-specific information if requested
+    if (includeDeviceInfo) {
+        // Add iOS version
+        [secretBase appendString:[[UIDevice currentDevice] systemVersion]];
+        
+        // Add app bundle identifier
+        [secretBase appendString:[[NSBundle mainBundle] bundleIdentifier]];
+        
+        // Add installation date if available
+        NSDate *installDate = [[NSFileManager defaultManager] attributesOfItemAtPath:
+                               [[NSBundle mainBundle] bundlePath] error:nil][NSFileCreationDate];
+        if (installDate) {
+            [secretBase appendFormat:@"%.0f", [installDate timeIntervalSince1970]];
+        }
+    }
+    
+    // Additional anti-tampering mechanism - incorporate a hash of the hmac method itself
+    NSString *methodName = NSStringFromSelector(_cmd);
+    [secretBase appendString:methodName];
+    
+    // Convert the string to data using HMAC SHA256 algorithm
+    const char *keyBytes = [secretBase UTF8String];
+    const char *dataBytes = [string UTF8String];
+    unsigned char hmacResult[CC_SHA256_DIGEST_LENGTH];
+    
+    CCHmac(kCCHmacAlgSHA256, 
+           keyBytes, 
+           strlen(keyBytes), 
+           dataBytes, 
+           strlen(dataBytes), 
+           hmacResult);
+    
+    // Convert the result to a hex string
+    NSMutableString *hexString = [NSMutableString stringWithCapacity:(CC_SHA256_DIGEST_LENGTH * 2)];
+    for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) {
+        [hexString appendFormat:@"%02x", hmacResult[i]];
+    }
+    
+    return hexString;
+}
+
+// Check if the device time has been tampered with
+- (BOOL)isDeviceTimeTampered {
+    // Retrieve time values using secure object storage
+    NSTimeInterval lastKnownServerTime = [[self secureObjectForKey:@"WeaponXLastServerTime"] doubleValue];
+    NSTimeInterval lastDeviceTimeAtServerSync = [[self secureObjectForKey:@"WeaponXLastDeviceTimeAtServerSync"] doubleValue];
+    NSTimeInterval currentDeviceTime = [[NSDate date] timeIntervalSince1970];
+    
+    // If we've never synced with the server, we can't detect tampering
+    if (lastKnownServerTime == 0 || lastDeviceTimeAtServerSync == 0) {
+        return NO;
+    }
+    
+    // Calculate how much device time has elapsed since last sync
+    NSTimeInterval deviceTimeElapsed = currentDeviceTime - lastDeviceTimeAtServerSync;
+    
+    // If the time elapsed is negative or extremely large, that's suspicious
+    if (deviceTimeElapsed < -60) { // Allow a small negative buffer for slight time corrections
+        // Time appears to have gone backward
+        NSLog(@"[WeaponX] ⚠️ Time tampering detected: Device time has moved backward by %.1f seconds", 
+              -deviceTimeElapsed);
+        return YES;
+    }
+    
+    // If time has advanced way too far beyond what's reasonable
+    if (deviceTimeElapsed > 30 * 24 * 60 * 60) { // 30 days in seconds
+        // Only consider it tampering if it's not a legitimate passage of time
+        // Check our last app use timestamp as a reference
+        NSTimeInterval lastAppUseTime = [[self secureObjectForKey:@"WeaponXLastAppUseTime"] doubleValue];
+        NSTimeInterval timeSinceLastUse = currentDeviceTime - lastAppUseTime;
+        
+        // If we've recorded app usage more recently than the elapsed time would suggest
+        if (lastAppUseTime > 0 && timeSinceLastUse < deviceTimeElapsed) {
+            NSLog(@"[WeaponX] ⚠️ Time tampering detected: Device time has jumped forward suspiciously");
+            return YES;
+        }
+    }
+    
+    // Update last app use time securely
+    [self secureSetObject:@(currentDeviceTime) forKey:@"WeaponXLastAppUseTime"];
+    
+    return NO;
+}
+
+// Update stored server time when we get a response
+- (void)updateServerTimeReference:(NSString *)serverTimeString {
+    if (!serverTimeString || [serverTimeString length] == 0) {
+        return;
+    }
+    
+    // Parse the server time string
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    [formatter setDateFormat:@"yyyy-MM-dd HH:mm:ss"];
+    NSDate *serverDate = [formatter dateFromString:serverTimeString];
+    
+    if (!serverDate) {
+        NSLog(@"[WeaponX] ⚠️ Failed to parse server time: %@", serverTimeString);
+        return;
+    }
+    
+    NSTimeInterval serverTime = [serverDate timeIntervalSince1970];
+    NSTimeInterval currentDeviceTime = [[NSDate date] timeIntervalSince1970];
+    
+    // Use secure storage for sensitive time data
+    [self secureSetObject:@(serverTime) forKey:@"WeaponXLastServerTime"];
+    [self secureSetObject:@(currentDeviceTime) forKey:@"WeaponXLastDeviceTimeAtServerSync"];
+    
+    // Calculate and store the delta between server and device time
+    NSTimeInterval timeDelta = serverTime - currentDeviceTime;
+    [self secureSetObject:@(timeDelta) forKey:@"WeaponXServerDeviceTimeDelta"];
+    
+    // Check for time tampering
+    BOOL isTampered = [self isDeviceTimeTampered];
+    [self secureSetObject:@(isTampered) forKey:@"WeaponXTimeManipulationDetected"];
+    
+    NSLog(@"[WeaponX] 🕒 Updated server time reference: %@ (Delta: %.1f seconds, Tampered: %@)", 
+          serverTimeString, timeDelta, isTampered ? @"YES" : @"NO");
+}
+
+// SSL certificate pinning for secure connections
+- (void)configureCertificatePinning {
+    // Get the URLSession configuration
+    NSURLSessionConfiguration *config = [NSURLSessionConfiguration defaultSessionConfiguration];
+    
+    // Create delegate-based session for certificate pinning
+    self.secureSession = [NSURLSession sessionWithConfiguration:config 
+                                                      delegate:self 
+                                                 delegateQueue:nil];
+}
+
+#pragma mark - NSURLSessionDelegate methods
+
+// Handle authentication challenges (for certificate pinning)
+- (void)URLSession:(NSURLSession *)session didReceiveChallenge:(NSURLAuthenticationChallenge *)challenge completionHandler:(void (^)(NSURLSessionAuthChallengeDisposition, NSURLCredential * _Nullable))completionHandler {
+    // Certificate pinning for weaponx.us domain
+    if ([challenge.protectionSpace.authenticationMethod isEqualToString:NSURLAuthenticationMethodServerTrust]) {
+        if ([challenge.protectionSpace.host containsString:@"weaponx.us"]) {
+            // Get the server trust
+            SecTrustRef serverTrust = challenge.protectionSpace.serverTrust;
+            
+            // Validate the host
+            BOOL isValid = NO;
+            
+            // Use modern API for trust evaluation that's compatible with iOS 15+
+            
+            // Primary security check - verify certificate chain
+            if (@available(iOS 13.0, *)) {
+                CFErrorRef cfError = NULL;
+                isValid = SecTrustEvaluateWithError(serverTrust, &cfError);
+                if (!isValid && cfError) {
+                    NSError *trustError = (__bridge_transfer NSError *)cfError;
+                    NSLog(@"[WeaponX] ❌ Certificate trust evaluation failed: %@", trustError);
+                }
+            } else {
+                // Fallback for older iOS versions if needed (but likely not used on iOS 15+)
+                SecTrustResultType result;
+                #pragma clang diagnostic push
+                #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+                SecTrustEvaluate(serverTrust, &result);
+                #pragma clang diagnostic pop
+                isValid = (result == kSecTrustResultUnspecified || result == kSecTrustResultProceed);
+            }
+            
+            // Additional security check - public key pinning
+            if (isValid) {
+                // Use modern API to get certificate data
+                if (@available(iOS 15.0, *)) {
+                    CFArrayRef certChain = SecTrustCopyCertificateChain(serverTrust);
+                    if (certChain && CFArrayGetCount(certChain) > 0) {
+                        SecCertificateRef certificate = (SecCertificateRef)CFArrayGetValueAtIndex(certChain, 0);
+                        NSData *remoteCertificateData = CFBridgingRelease(SecCertificateCopyData(certificate));
+                        
+                        // Check if we need to initialize the trusted cert data
+                        if (!self.trustedServerCertificateData) {
+                            // On first run, we trust and store the certificate
+                            NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+                            NSData *storedCertData = [defaults objectForKey:@"WeaponXTrustedCertificateData"];
+                            
+                            if (storedCertData) {
+                                self.trustedServerCertificateData = storedCertData;
+                            } else {
+                                // First connection - trust this certificate and store it
+                                self.trustedServerCertificateData = remoteCertificateData;
+                                [defaults setObject:remoteCertificateData forKey:@"WeaponXTrustedCertificateData"];
+                                [defaults synchronize];
+                                
+                                NSLog(@"[WeaponX] 🔒 Stored initial trusted certificate for future validation");
+                            }
+                        }
+                        
+                        // Validate against our trusted certificate data
+                        isValid = [self.trustedServerCertificateData isEqualToData:remoteCertificateData];
+                        CFRelease(certChain);
+                    } else {
+                        isValid = NO;
+                    }
+                } else {
+                    // Fallback for older iOS versions
+                    #pragma clang diagnostic push
+                    #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+                    SecCertificateRef certificate = SecTrustGetCertificateAtIndex(serverTrust, 0);
+                    #pragma clang diagnostic pop
+                    if (certificate) {
+                        NSData *remoteCertificateData = CFBridgingRelease(SecCertificateCopyData(certificate));
+                        
+                        // Check stored certs as above
+                        if (!self.trustedServerCertificateData) {
+                            NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+                            NSData *storedCertData = [defaults objectForKey:@"WeaponXTrustedCertificateData"];
+                            
+                            if (storedCertData) {
+                                self.trustedServerCertificateData = storedCertData;
+                            } else {
+                                self.trustedServerCertificateData = remoteCertificateData;
+                                [defaults setObject:remoteCertificateData forKey:@"WeaponXTrustedCertificateData"];
+                                [defaults synchronize];
+                            }
+                        }
+                        
+                        isValid = [self.trustedServerCertificateData isEqualToData:remoteCertificateData];
+                    } else {
+                        isValid = NO;
+                    }
+                }
+            }
+            
+            if (isValid) {
+                NSLog(@"[WeaponX] ✅ Certificate validation successful for server: %@", challenge.protectionSpace.host);
+                NSURLCredential *credential = [NSURLCredential credentialForTrust:serverTrust];
+                completionHandler(NSURLSessionAuthChallengeUseCredential, credential);
+                return;
+            } else {
+                NSLog(@"[WeaponX] ❌ Certificate validation failed for server: %@", challenge.protectionSpace.host);
+                completionHandler(NSURLSessionAuthChallengeCancelAuthenticationChallenge, nil);
+                return;
+            }
+        }
+    }
+    
+    // Default handling for other cases
+    completionHandler(NSURLSessionAuthChallengePerformDefaultHandling, nil);
+}
+
+// Method to generate obfuscated keys dynamically
+- (NSString *)generateObfuscatedKey:(NSString *)keyName {
+    // Mix of device-specific data and runtime data
+    NSMutableString *baseData = [NSMutableString string];
+    
+    // Add some device-specific data
+    [baseData appendString:[[UIDevice currentDevice] systemVersion]];
+    NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
+    if (bundleID) {
+        [baseData appendString:bundleID];
+    }
+    
+    // Add bundle creation date (won't change after installation)
+    NSDate *bundleCreationDate = [[NSFileManager defaultManager] attributesOfItemAtPath:
+                               [[NSBundle mainBundle] bundlePath] error:nil][NSFileCreationDate];
+    if (bundleCreationDate) {
+        // Use just the date part, not time, for stability
+        NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+        [formatter setDateFormat:@"yyyyMMdd"];
+        [baseData appendString:[formatter stringFromDate:bundleCreationDate]];
+    }
+    
+    // Create a synthetic identifier based on the app instance
+    NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
+    if (bundlePath) {
+        // Get characters based on length (more stable than the path itself)
+        [baseData appendFormat:@"%lu", (unsigned long)bundlePath.length];
+    }
+    
+    // Use the baseData to transform the keyName
+    NSMutableString *result = [NSMutableString string];
+    const char *keyChars = [keyName UTF8String];
+    const char *baseChars = [baseData UTF8String];
+    NSUInteger baseLen = [baseData length];
+    
+    for (int i = 0; i < strlen(keyChars); i++) {
+        char c = keyChars[i];
+        char baseChar = baseChars[i % baseLen];
+        
+        // Simple transformation - XOR with corresponding base char
+        char transformed = c ^ (baseChar % 16);
+        [result appendFormat:@"%02x", transformed];
+    }
+    
+    return result;
+}
+
+// Get the obfuscated service name for Keychain
+- (NSString *)keychainServiceName {
+    // First check if we've already computed it
+    static NSString *cachedServiceName = nil;
+    if (cachedServiceName) {
+        return cachedServiceName;
+    }
+    
+    // Generate the obfuscated service name
+    NSString *plainServiceName = @"WeaponX";
+    cachedServiceName = [self generateObfuscatedKey:plainServiceName];
+    
+    return cachedServiceName;
+}
+
+// Get obfuscated UserDefaults key
+- (NSString *)userDefaultsKeyForName:(NSString *)plainKeyName {
+    // First check if we've already cached this key
+    static NSMutableDictionary *keyCache = nil;
+    if (!keyCache) {
+        keyCache = [NSMutableDictionary dictionary];
+    }
+    
+    // Return from cache if available
+    NSString *cachedKey = keyCache[plainKeyName];
+    if (cachedKey) {
+        return cachedKey;
+    }
+    
+    // Generate a new obfuscated key
+    NSString *obfuscatedKey = [self generateObfuscatedKey:plainKeyName];
+    
+    // Cache it for future use
+    keyCache[plainKeyName] = obfuscatedKey;
+    
+    return obfuscatedKey;
+}
+
+// Method to securely store values in UserDefaults with obfuscated keys
+- (void)secureSetObject:(id)value forKey:(NSString *)plainKey {
+    NSString *obfuscatedKey = [self userDefaultsKeyForName:plainKey];
+    
+    // Check if we're storing sensitive data
+    BOOL isSensitive = [plainKey containsString:@"Token"] || 
+                        [plainKey containsString:@"UserId"] || 
+                        [plainKey containsString:@"AuthToken"] ||
+                        [plainKey containsString:@"Password"];
+    
+    // For sensitive data, add additional obfuscation
+    if (isSensitive && [value isKindOfClass:[NSString class]]) {
+        // Simple XOR obfuscation - can be enhanced further
+        NSString *stringValue = (NSString *)value;
+        NSMutableString *obfuscatedValue = [NSMutableString string];
+        
+        for (NSUInteger i = 0; i < stringValue.length; i++) {
+            unichar c = [stringValue characterAtIndex:i];
+            unichar obfuscated = c ^ 0x42; // Simple XOR with a fixed value
+            [obfuscatedValue appendFormat:@"%C", obfuscated];
+        }
+        
+        value = obfuscatedValue;
+    }
+    
+    // Store the value with the obfuscated key
+    [[NSUserDefaults standardUserDefaults] setObject:value forKey:obfuscatedKey];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
+// Method to securely retrieve values from UserDefaults with obfuscated keys
+- (id)secureObjectForKey:(NSString *)plainKey {
+    NSString *obfuscatedKey = [self userDefaultsKeyForName:plainKey];
+    id value = [[NSUserDefaults standardUserDefaults] objectForKey:obfuscatedKey];
+    
+    // Check if we need to deobfuscate
+    BOOL isSensitive = [plainKey containsString:@"Token"] || 
+                        [plainKey containsString:@"UserId"] || 
+                        [plainKey containsString:@"AuthToken"] ||
+                        [plainKey containsString:@"Password"];
+    
+    // For sensitive data, reverse the obfuscation
+    if (isSensitive && [value isKindOfClass:[NSString class]]) {
+        NSString *obfuscatedValue = (NSString *)value;
+        NSMutableString *deobfuscatedValue = [NSMutableString string];
+        
+        for (NSUInteger i = 0; i < obfuscatedValue.length; i++) {
+            unichar c = [obfuscatedValue characterAtIndex:i];
+            unichar deobfuscated = c ^ 0x42; // Reverse the XOR operation
+            [deobfuscatedValue appendFormat:@"%C", deobfuscated];
+        }
+        
+        return deobfuscatedValue;
+    }
+    
+    return value;
+}
+
+// Get verification date from verification data for a tab
+- (NSDate *)getVerificationDateForTab:(NSString *)tabName {
+    // Get the verification data first
+    NSDictionary *verification = [self getVerificationFromKeychainForTab:tabName];
+    
+    if (!verification) {
+        return nil;
+    }
+    
+    // Get the timestamp value
+    NSNumber *timestamp = verification[@"timestamp"];
+    if (!timestamp || ![timestamp isKindOfClass:[NSNumber class]]) {
+        NSLog(@"[WeaponX] ⚠️ LAYER 2: No valid timestamp in verification data for tab: %@", tabName);
+        return nil;
+    }
+    
+    // Convert timestamp to NSDate
+    NSDate *verificationDate = [NSDate dateWithTimeIntervalSince1970:[timestamp doubleValue]];
+    return verificationDate;
+}
+
+// Add this after handleUserLogout method
+
+- (void)userDidLogout:(NSNotification *)notification {
+    NSLog(@"[WeaponX] 🧹 LAYER 2: Clearing verification time cache on logout");
+    
+    // Clear the verification time cache dictionary
+    [self.tabLastVerificationTime removeAllObjects];
+    
+    // Reset the verification status tracking
+    [self.tabVerificationStatus setObject:@NO forKey:@"map_tab"];
+    [self.tabVerificationStatus setObject:@NO forKey:@"security_tab"];
+    
+    // Forward to the main logout handler
+    [self handleUserLogout:notification];
+}
+
+// Add this method to help handle scene callbacks for iPad
+- (void)setupIPadSceneHandling {
+    if (!self.isIPad) return;
+    
+    // Register for scene-related notifications
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleSceneDidConnect:)
+                                                 name:@"SceneDidConnect"
+                                               object:nil];
+    
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(sceneIdentifierChanged:)
+                                                 name:@"WeaponXSceneIdentifierChanged"
+                                               object:nil];
+    
+    // Get current scene identifier from NSUserDefaults
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    self.sceneIdentifier = [defaults objectForKey:@"WeaponXLastActiveSceneID"];
+    
+    // Log the current scene ID
+    NSLog(@"[WeaponX] iPad scene handling initialized with ID: %@", self.sceneIdentifier ?: @"None");
+    
+    // Register for additional scene-related notifications
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                            selector:@selector(handleSceneRegistration:)
+                                                name:@"WeaponXSceneRegistered"
+                                              object:nil];
+    
+    // Register for window scene activation notifications to ensure we track scene changes
+    if (@available(iOS 13.0, *)) {
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                selector:@selector(handleWindowSceneUpdate:)
+                                                    name:UISceneDidActivateNotification
+                                                  object:nil];
+        
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                selector:@selector(handleWindowSceneSizeChange:)
+                                                    name:UISceneWillEnterForegroundNotification
+                                                  object:nil];
+    }
+}
+
+- (void)handleSceneDidConnect:(NSNotification *)notification {
+    if (!self.isIPad) return;
+    
+    // Update our local scene identifier
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSString *newSceneID = [defaults objectForKey:@"WeaponXLastActiveSceneID"];
+    
+    if (newSceneID && ![self.sceneIdentifier isEqualToString:newSceneID]) {
+        NSLog(@"[WeaponX] iPad scene ID changed: %@ -> %@", self.sceneIdentifier ?: @"None", newSceneID);
+        self.sceneIdentifier = newSceneID;
+        
+        // Post notification about scene identifier change
+        NSMutableDictionary *sceneChangeInfo = [NSMutableDictionary dictionary];
+        [sceneChangeInfo setObject:newSceneID forKey:@"sceneID"];
+        
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"WeaponXSceneIdentifierChanged" 
+                                                            object:nil 
+                                                          userInfo:sceneChangeInfo];
+    }
+}
+
+- (void)sceneIdentifierChanged:(NSNotification *)notification {
+    // Additional handling for scene identifier changes if needed
+    NSLog(@"[WeaponX] Handling scene identifier change notification");
+}
+
+- (void)handleSceneRegistration:(NSNotification *)notification {
+    if (!self.isIPad) return;
+    
+    NSString *sceneID = notification.userInfo[@"sceneID"];
+    if (sceneID) {
+        NSLog(@"[WeaponX] TabBarController: Scene registered: %@", sceneID);
+        self.sceneIdentifier = sceneID;
+        
+        // Register with UIKit's scene management
+        [[NSUserDefaults standardUserDefaults] setObject:sceneID forKey:@"WeaponXLastActiveSceneID"];
+        [[NSUserDefaults standardUserDefaults] synchronize];
+    }
+}
+
+- (void)handleWindowSceneUpdate:(NSNotification *)notification {
+    if (!self.isIPad) return;
+    
+    UIScene *scene = notification.object;
+    if ([scene isKindOfClass:[UIWindowScene class]]) {
+        UIWindowScene *windowScene = (UIWindowScene *)scene;
+        NSString *sceneID = windowScene.session.persistentIdentifier;
+        
+        NSLog(@"[WeaponX] TabBarController: Window scene activated: %@", sceneID);
+        
+        if (![self.sceneIdentifier isEqualToString:sceneID]) {
+            self.sceneIdentifier = sceneID;
+            
+            // Register with system
+            [[NSUserDefaults standardUserDefaults] setObject:sceneID forKey:@"WeaponXLastActiveSceneID"];
+            [[NSUserDefaults standardUserDefaults] synchronize];
+            
+            // Try to register with bluetoothd directly to fix unknown identifier issues
+            if ([[NSBundle mainBundle].bundleIdentifier isEqualToString:@"com.hydra.projectx"]) {
+                CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                                    CFSTR("com.apple.system.scene-update"),
+                                                    NULL, 
+                                                    (__bridge CFDictionaryRef)@{
+                                                        @"bundleID": @"com.hydra.projectx",
+                                                        @"sceneID": sceneID
+                                                    }, 
+                                                    TRUE);
+            }
+        }
+    }
+}
+
+- (void)handleWindowSceneSizeChange:(NSNotification *)notification {
+    if (!self.isIPad) return;
+    
+    UIScene *scene = notification.object;
+    if ([scene isKindOfClass:[UIWindowScene class]]) {
+        UIWindowScene *windowScene = (UIWindowScene *)scene;
+        NSLog(@"[WeaponX] TabBarController: Scene became active: %@", windowScene.session.persistentIdentifier);
+    }
+}
+
+// MARK: - iPad Scene Lifecycle Management
+- (void)prepareForSceneDisconnect {
+    if (![self isDeviceIPad]) {
+        return; // Only applicable for iPad
+    }
+    
+    NSLog(@"[WeaponX] 📱 Preparing for scene disconnect");
+    
+    // Save current application state
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    [defaults setObject:@(self.selectedIndex) forKey:@"LastSelectedTabIndex"];
+    [defaults synchronize];
+    
+    // Clean up UI state
+    [self dismissPresentedViewControllersForSafeDisconnect];
+    
+    // Pause resource intensive operations
+    [self pauseResourceIntensiveOperations];
+    
+    // Notify observers about scene disconnect preparation
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"SceneWillDisconnectNotification" 
+                                                        object:nil 
+                                                      userInfo:@{@"timestamp": [NSDate date]}];
+}
+
+- (void)prepareForBackgroundState {
+    NSLog(@"[WeaponX] 📱 Preparing for background state");
+    
+    // Save any user data or state that needs to be preserved
+    [self saveUserData];
+    
+    // Blur sensitive content if needed for privacy
+    [self blurSensitiveContent];
+    
+    // Pause resource intensive operations
+    [self pauseResourceIntensiveOperations];
+    
+    // For iPad, we need special handling for multiple scenes
+    if ([self isDeviceIPad]) {
+        // Check if this is the last active scene
+        BOOL isLastActiveScene = [[NSUserDefaults standardUserDefaults] boolForKey:@"IsLastActiveScene"];
+        
+        if (isLastActiveScene) {
+            // Perform final cleanup before app completely enters background
+            [self performFinalBackgroundCleanup];
+        }
+    }
+    
+    // Notify observers about background state preparation
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"AppPreparingForBackgroundNotification" 
+                                                        object:nil];
+}
+
+- (void)saveUserData {
+    // Save current state and user data
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    [defaults setObject:@(self.selectedIndex) forKey:@"LastSelectedTabIndex"];
+    
+    // Save authentication status if needed
+    if ([self hasValidAuthenticationSession]) {
+        [defaults setBool:YES forKey:@"HasValidSession"];
+    }
+    
+    [defaults synchronize];
+}
+
+- (void)blurSensitiveContent {
+    // Apply visual blur to any sensitive content for privacy when app goes to background
+    UIBlurEffect *blurEffect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleRegular];
+    
+    // Remove any existing blur views first
+    for (UIView *subview in self.view.subviews) {
+        if ([subview isKindOfClass:[UIVisualEffectView class]]) {
+            [subview removeFromSuperview];
+        }
+    }
+    
+    // Only add blur if we have sensitive content visible
+    if ([self hasSensitiveContentVisible]) {
+        UIVisualEffectView *blurView = [[UIVisualEffectView alloc] initWithEffect:blurEffect];
+        blurView.frame = self.view.bounds;
+        blurView.tag = 12345; // Tag for easy identification later
+        [self.view addSubview:blurView];
+    }
+}
+
+- (BOOL)hasSensitiveContentVisible {
+    // Check if the current tab or presented view controllers contain sensitive information
+    // This could check the selected tab or specific view controller types
+    
+    // Example implementation
+    UIViewController *currentTab = self.viewControllers[self.selectedIndex];
+    
+    // Check if we're in a tab that contains sensitive data
+    if ([currentTab isKindOfClass:[UINavigationController class]]) {
+        UINavigationController *navController = (UINavigationController *)currentTab;
+        UIViewController *topVC = navController.topViewController;
+        
+        // Check if the top view controller has sensitive content
+        if ([topVC respondsToSelector:@selector(containsSensitiveContent)]) {
+            return [topVC performSelector:@selector(containsSensitiveContent)];
+        }
+    }
+    
+    return NO; // Default to no sensitive content
+}
+
+- (void)performFinalBackgroundCleanup {
+    // Clear any caches that aren't needed between launches
+    [[NSURLCache sharedURLCache] removeAllCachedResponses];
+    
+    // Cancel any remaining background tasks
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"CancelAllBackgroundTasks" object:nil];
+}
+
+#pragma mark - Helper Methods for iPad Scene Management
+
+- (void)dismissPresentedViewControllersForSafeDisconnect {
+    // Only perform this if we have presented view controllers
+    if (self.presentedViewController) {
+        [self dismissViewControllerAnimated:NO completion:nil];
+    }
+    
+    // Also check each tab's navigation stack
+    for (UIViewController *tabVC in self.viewControllers) {
+        if ([tabVC isKindOfClass:[UINavigationController class]]) {
+            UINavigationController *navController = (UINavigationController *)tabVC;
+            // Pop to root if needed to prevent state issues during disconnect
+            if (navController.viewControllers.count > 1) {
+                [navController popToRootViewControllerAnimated:NO];
+            }
+            
+            // Dismiss any presented view controllers on this nav controller
+            if (navController.presentedViewController) {
+                [navController dismissViewControllerAnimated:NO completion:nil];
+            }
+        }
+    }
+}
+
+- (void)pauseResourceIntensiveOperations {
+    NSLog(@"[WeaponX] 📱 Pausing resource intensive operations");
+    
+    // Pause video playback if any
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"PauseMediaPlaybackNotification" object:nil];
+    
+    // Cancel any pending network requests that aren't critical
+    [self cancelNonCriticalNetworkRequests];
+    
+    // Invalidate timers that might be running
+    [NSObject cancelPreviousPerformRequestsWithTarget:self];
+    
+    // Signal all view controllers to pause heavy operations
+    for (UIViewController *tabVC in self.viewControllers) {
+        if ([tabVC respondsToSelector:@selector(pauseHeavyOperations)]) {
+            [tabVC performSelector:@selector(pauseHeavyOperations)];
+        }
+        
+        // Check if it's a navigation controller and inform its children
+        if ([tabVC isKindOfClass:[UINavigationController class]]) {
+            UINavigationController *navController = (UINavigationController *)tabVC;
+            for (UIViewController *childVC in navController.viewControllers) {
+                if ([childVC respondsToSelector:@selector(pauseHeavyOperations)]) {
+                    [childVC performSelector:@selector(pauseHeavyOperations)];
+                }
+            }
+        }
+    }
+}
+
+- (void)configureForMultiScene:(NSString *)sceneIdentifier {
+    // Configure tab bar controller specifically for this scene
+    NSLog(@"[WeaponX] Configuring TabBarController for multi-scene support with ID: %@", sceneIdentifier);
+    
+    // Generate a unique tag for UI elements in this scene to avoid conflicts
+    NSUInteger sceneTag = [sceneIdentifier hash] % 10000;
+    NSLog(@"[WeaponX] Generated scene tag: %lu", (unsigned long)sceneTag);
+    
+    // Store scene-specific data in user defaults with scene identifier prefix
+    NSString *userDefaultsKey = [NSString stringWithFormat:@"scene_%@_lastSelectedTab", sceneIdentifier];
+    
+    // Retrieve last selected tab for this scene if available
+    NSNumber *lastSelectedTabNumber = [[NSUserDefaults standardUserDefaults] objectForKey:userDefaultsKey];
+    if (lastSelectedTabNumber) {
+        NSInteger lastTab = [lastSelectedTabNumber integerValue];
+        // Ensure the index is valid
+        if (lastTab >= 0 && lastTab < self.viewControllers.count) {
+            self.selectedIndex = lastTab;
+        }
+    }
+    
+    // Set up observer to save selected tab when it changes
+    NSMutableDictionary *notificationUserInfo = [NSMutableDictionary dictionary];
+    [notificationUserInfo setObject:sceneIdentifier forKey:@"sceneID"];
+    
+    [[NSNotificationCenter defaultCenter] addObserver:self 
+                                             selector:@selector(tabBarSelectionDidChange:) 
+                                                 name:@"TabBarSelectionChangedNotification" 
+                                               object:nil];
+}
+
+- (void)tabBarSelectionDidChange:(NSNotification *)notification {
+    // Only save state if we have a valid scene identifier
+    if (self.sceneIdentifier.length > 0) {
+        NSString *userDefaultsKey = [NSString stringWithFormat:@"scene_%@_lastSelectedTab", self.sceneIdentifier];
+        [[NSUserDefaults standardUserDefaults] setObject:@(self.selectedIndex) forKey:userDefaultsKey];
+    }
+}
+
+- (void)registerSceneWithSystem:(NSString *)sceneIdentifier {
+    if (![self isDeviceIPad]) {
+        return; // Only applicable for iPad
+    }
+    
+    NSLog(@"[WeaponX] 📱 Registering scene with system: %@", sceneIdentifier);
+    
+    // Store the scene identifier
+    self.sceneIdentifier = sceneIdentifier;
+    
+    // Save to user defaults for persistence
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    [defaults setObject:sceneIdentifier forKey:@"WeaponXLastActiveSceneID"];
+    
+    // Set this as the last active scene
+    [defaults setBool:YES forKey:@"IsLastActiveScene"];
+    [defaults synchronize];
+    
+    // Configure iPad-specific UI for this scene
+    [self configureForMultiScene:sceneIdentifier];
+    
+    // Register with notification system
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"SceneRegisteredNotification" 
+                                                      object:nil 
+                                                    userInfo:@{@"sceneID": sceneIdentifier}];
+    
+    // Initialize tab state for this scene
+    [self restoreTabStateForScene:sceneIdentifier];
+}
+
+- (void)configureForMultiScene:(NSString *)sceneIdentifier {
+    // Configure the UI based on the scene type/identifier
+    
+    // Check if this is the primary or secondary scene
+    BOOL isPrimaryScene = [sceneIdentifier containsString:@"primary"];
+    
+    if (isPrimaryScene) {
+        // Primary scene typically shows all tabs
+        [self configureForPrimaryScene];
+    } else {
+        // Secondary scenes might have a focused/limited UI
+        [self configureForSecondaryScene];
+    }
+    
+    // Set scene-specific preferences
+    NSUserDefaults *sceneDefaults = [[NSUserDefaults alloc] initWithSuiteName:
+                                     [NSString stringWithFormat:@"scene.%@", sceneIdentifier]];
+    
+    // Save initial state for this scene if needed
+    if (![sceneDefaults objectForKey:@"InitialSetupComplete"]) {
+        [sceneDefaults setBool:YES forKey:@"InitialSetupComplete"];
+        [sceneDefaults setObject:[NSDate date] forKey:@"SceneFirstLaunchDate"];
+        [sceneDefaults synchronize];
+    }
+}
+
+- (void)configureForPrimaryScene {
+    // Configure all tabs to be visible in primary scene
+    NSMutableArray *viewControllers = [NSMutableArray array];
+    
+    // Add all view controllers that should be available in the primary scene
+    // This method would be implemented based on your tab structure
+    
+    // Example implementation (customize based on your actual tab structure)
+    for (UIViewController *vc in self.viewControllers) {
+        [viewControllers addObject:vc];
+    }
+    
+    // Set the tab order if needed
+    // self.viewControllers = viewControllers;
+}
+
+- (void)configureForSecondaryScene {
+    // Configure for secondary scene - may have fewer tabs or different configuration
+    // Secondary scenes might be more focused on specific functionality
+    
+    // Example: You might want to limit tabs in secondary scenes
+    NSMutableArray *limitedViewControllers = [NSMutableArray array];
+    
+    // Add only the essential view controllers for secondary scenes
+    // (This is just a placeholder - actual implementation would depend on your app's needs)
+    for (UIViewController *vc in self.viewControllers) {
+        if ([self isEssentialViewController:vc]) {
+            [limitedViewControllers addObject:vc];
+        }
+    }
+    
+    // Only update if we need to change the tab structure
+    // if (limitedViewControllers.count > 0) {
+    //     self.viewControllers = limitedViewControllers;
+    // }
+}
+
+- (BOOL)isEssentialViewController:(UIViewController *)viewController {
+    // Determine if this view controller should be included in secondary scenes
+    // This is app-specific logic
+    
+    // Example implementation
+    if ([viewController isKindOfClass:[UINavigationController class]]) {
+        UINavigationController *navController = (UINavigationController *)viewController;
+        UIViewController *rootVC = navController.viewControllers.firstObject;
+        
+        // Check the class name to determine if it's essential
+        NSString *className = NSStringFromClass([rootVC class]);
+        
+        // Example - include only specific tabs in secondary scenes
+        return [className containsString:@"Home"] || 
+               [className containsString:@"Profile"] ||
+               [className containsString:@"Settings"];
+    }
+    
+    return YES; // Default to including if not a navigation controller
+}
+
+- (void)restoreTabStateForScene:(NSString *)sceneIdentifier {
+    // Restore the tab state for this specific scene if available
+    NSUserDefaults *sceneDefaults = [[NSUserDefaults alloc] initWithSuiteName:
+                                     [NSString stringWithFormat:@"scene.%@", sceneIdentifier]];
+    
+    // Get the last selected tab for this scene
+    NSNumber *lastTabIndex = [sceneDefaults objectForKey:@"LastSelectedTabIndex"];
+    
+    if (lastTabIndex) {
+        // Only restore if the index is valid
+        NSInteger tabIndex = [lastTabIndex integerValue];
+        if (tabIndex >= 0 && tabIndex < self.viewControllers.count) {
+            self.selectedIndex = tabIndex;
+        }
+    }
+}
+
+- (void)dismissPresentedViewControllersForSafeDisconnect {
+    // Recursively dismiss presented view controllers to prevent state issues
+    UIViewController *presentedVC = self.presentedViewController;
+    
+    if (presentedVC) {
+        // If we have a presented view controller, dismiss it and return
+        // This will call this method again after dismissal
+        [presentedVC dismissViewControllerAnimated:NO completion:^{
+            [self dismissPresentedViewControllersForSafeDisconnect];
+        }];
+        return;
+    }
+    
+    // Once we have no more presented view controllers at the tab bar level,
+    // check for presented view controllers in each tab
+    for (UIViewController *tabVC in self.viewControllers) {
+        if ([tabVC isKindOfClass:[UINavigationController class]]) {
+            UINavigationController *navController = (UINavigationController *)tabVC;
+            
+            // Check if the top view controller has any presented view controllers
+            UIViewController *topVC = navController.topViewController;
+            if (topVC.presentedViewController) {
+                [topVC.presentedViewController dismissViewControllerAnimated:NO completion:nil];
+            }
+        } else if (tabVC.presentedViewController) {
+            [tabVC.presentedViewController dismissViewControllerAnimated:NO completion:nil];
+        }
+    }
+}
+
+- (BOOL)hasValidAuthenticationSession {
+    // Check if user has a valid authentication session
+    // This checks both the token existence and its validity
+    
+    // Get token from NSUserDefaults
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSString *authToken = [defaults objectForKey:@"WeaponXAuthToken"];
+    
+    if (!authToken) {
+        return NO; // No token found
+    }
+    
+    // Check if token is expired by looking at expiration date
+    NSDate *tokenExpiration = [defaults objectForKey:@"WeaponXAuthTokenExpiration"];
+    if (tokenExpiration && [[NSDate date] compare:tokenExpiration] == NSOrderedDescending) {
+        NSLog(@"[WeaponX] 🔐 Auth token expired");
+        return NO; // Token expired
+    }
+    
+    // Check if we have user data associated with the token
+    NSDictionary *userData = [defaults objectForKey:@"WeaponXUserInfo"];
+    if (!userData) {
+        return NO; // No user data found
+    }
+    
+    // If all checks pass, the authentication session is valid
+    return YES;
+}
+
+- (void)cancelNonCriticalNetworkRequests {
+    NSLog(@"[WeaponX] 🌐 Canceling non-critical network requests");
+    
+    // Post notification for API Manager to cancel non-critical requests
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"CancelNonCriticalNetworkRequests" object:nil];
+    
+    // Cancel any image loading or data prefetching operations
+    for (UIViewController *viewController in self.viewControllers) {
+        // Check if this view controller responds to cancelOperations
+        if ([viewController respondsToSelector:@selector(cancelNonCriticalOperations)]) {
+            [viewController performSelector:@selector(cancelNonCriticalOperations)];
+        }
+        
+        // If it's a navigation controller, check its child view controllers
+        if ([viewController isKindOfClass:[UINavigationController class]]) {
+            UINavigationController *navController = (UINavigationController *)viewController;
+            
+            for (UIViewController *childVC in navController.viewControllers) {
+                if ([childVC respondsToSelector:@selector(cancelNonCriticalOperations)]) {
+                    [childVC performSelector:@selector(cancelNonCriticalOperations)];
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Keychain Utility Methods
+
+// Helper method to get Keychain service name
+- (NSString *)keychainServiceName {
+    // Return a consistent but semi-obfuscated service name
+    return [NSString stringWithFormat:@"%@.%@", @"com.hydra", @"weaponx"];
+}
+
+// Helper method to generate HMAC signatures for verification data
+- (NSString *)hmacSignatureForString:(NSString *)inputString withDeviceInfo:(BOOL)includeDeviceInfo {
+    // Create a secure signature for verification data
+    NSMutableString *stringToSign = [NSMutableString stringWithString:inputString];
+    
+    // If requested, include device-specific info in the signature
+    if (includeDeviceInfo) {
+        // Add device model
+        NSString *deviceModel = [[UIDevice currentDevice] model];
+        if (deviceModel) {
+            [stringToSign appendFormat:@":%@", deviceModel];
+        }
+        
+        // Add system name and version
+        NSString *systemInfo = [NSString stringWithFormat:@"%@_%@", 
+                               [[UIDevice currentDevice] systemName],
+                               [[UIDevice currentDevice] systemVersion]];
+        [stringToSign appendFormat:@":%@", systemInfo];
+    }
+    
+    // Get the app's bundle ID as salt
+    NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
+    [stringToSign appendFormat:@":%@", bundleID ?: @"com.hydra.projectx"];
+    
+    // Initialize common crypto
+    const char *cKey = [@"WX_L2_KEY_9876543210" cStringUsingEncoding:NSUTF8StringEncoding];
+    const char *cData = [stringToSign cStringUsingEncoding:NSUTF8StringEncoding];
+    
+    unsigned char cHMAC[CC_SHA256_DIGEST_LENGTH];
+    CCHmac(kCCHmacAlgSHA256, cKey, strlen(cKey), cData, strlen(cData), cHMAC);
+    
+    // Convert to hex string
+    NSMutableString *hexString = [NSMutableString stringWithCapacity:(CC_SHA256_DIGEST_LENGTH * 2)];
+    for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) {
+        [hexString appendFormat:@"%02x", cHMAC[i]];
+    }
+    
+    return hexString;
+}
+
+// Get the date of the last verification for a tab
+- (NSDate *)getVerificationDateForTab:(NSString *)tabName {
+    NSDictionary *verification = [self getVerificationFromKeychainForTab:tabName];
+    
+    if (!verification) {
+        return nil;
+    }
+    
+    NSNumber *timestamp = verification[@"timestamp"];
+    if (!timestamp) {
+        return nil;
+    }
+    
+    return [NSDate dateWithTimeIntervalSince1970:[timestamp doubleValue]];
+}
+
+// Update server time reference
+- (void)updateServerTimeReference:(NSString *)serverTimeString {
+    double serverTime = [serverTimeString doubleValue];
+    
+    if (serverTime <= 0) {
+        return;
+    }
+    
+    // Calculate time offset between local and server
+    NSTimeInterval localTime = [[NSDate date] timeIntervalSince1970];
+    NSTimeInterval offset = serverTime - localTime;
+    
+    // Store the offset
+    [[NSUserDefaults standardUserDefaults] setDouble:offset forKey:@"WeaponXServerTimeOffset"];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
+// Method to verify Layer 2 security in offline mode
+- (BOOL)verifyLayer2OfflineAccess:(NSString *)tabName {
+    // Get verification data from Keychain
+    NSDictionary *verification = [self getVerificationFromKeychainForTab:tabName];
+    
+    if (!verification) {
+        return NO; // No verification data found
+    }
+    
+    // Get timestamp from verification data
+    NSNumber *timestamp = verification[@"timestamp"];
+    if (!timestamp) {
+        return NO; // No timestamp in verification data
+    }
+    
+    // Check if access is allowed according to verification data
+    NSNumber *accessAllowed = verification[@"access_allowed"];
+    if (!accessAllowed || ![accessAllowed boolValue]) {
+        NSLog(@"[WeaponX] 🚫 LAYER 2: Offline access denied by stored verification for tab: %@", tabName);
+        return NO;
+    }
+    
+    // Get the verification date
+    NSDate *verificationDate = [NSDate dateWithTimeIntervalSince1970:[timestamp doubleValue]];
+    
+    // Check if within grace period (default 24 hours)
+    NSTimeInterval timeSinceVerification = [[NSDate date] timeIntervalSinceDate:verificationDate];
+    
+    // Get configured grace period
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSTimeInterval gracePeriod = [defaults doubleForKey:@"WeaponXOfflineGracePeriod"];
+    
+    // Use default if not set
+    if (gracePeriod <= 0) {
+        gracePeriod = 24 * 60 * 60; // 24 hours in seconds
+    }
+    
+    // Allow access if within grace period
+    if (timeSinceVerification <= gracePeriod) {
+        NSLog(@"[WeaponX] ✅ LAYER 2: Offline access granted - verification age: %.1f hours (grace period: %.1f hours)", 
+              timeSinceVerification / 3600.0, gracePeriod / 3600.0);
+        return YES;
+    }
+    
+    // Deny access if outside grace period
+    NSLog(@"[WeaponX] 🚫 LAYER 2: Offline access denied - verification age: %.1f hours (exceeds grace period: %.1f hours)", 
+          timeSinceVerification / 3600.0, gracePeriod / 3600.0);
+    return NO;
+}
+
+// Show offline access denied alert
+- (void)showOfflineAccessDeniedAlert:(NSString *)tabName {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIAlertController *alert = [UIAlertController 
+            alertControllerWithTitle:@"Offline Access Expired" 
+            message:@"Your offline access period for this feature has expired. Please connect to the internet to verify your subscription." 
+            preferredStyle:UIAlertControllerStyleAlert];
+        
+        [alert addAction:[UIAlertAction 
+            actionWithTitle:@"OK" 
+            style:UIAlertActionStyleDefault 
+            handler:nil]];
+        
+        [self presentViewController:alert animated:YES completion:nil];
+    });
+}
+
+// Method to detect device time tampering
+- (BOOL)isDeviceTimeTampered {
+    // Get stored last usage time
+    NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+    NSDate *lastUsageTime = [defaults objectForKey:@"WeaponXLastUsageTime"];
+    
+    // Get current time
+    NSDate *currentTime = [NSDate date];
+    
+    // Store current time for next check
+    [defaults setObject:currentTime forKey:@"WeaponXLastUsageTime"];
+    [defaults synchronize];
+    
+    // If this is first run, just return NO
+    if (!lastUsageTime) {
+        return NO;
+    }
+    
+    // Check if current time is before last usage time (indicates tampering)
+    if ([currentTime compare:lastUsageTime] == NSOrderedAscending) {
+        NSTimeInterval timeDifference = [lastUsageTime timeIntervalSinceDate:currentTime];
+        
+        // If time went backward by more than 5 minutes, consider it tampering
+        if (timeDifference > 300) { // 300 seconds = 5 minutes
+            NSLog(@"[WeaponX] ⚠️ Time tampering detected! Time went backward by %.1f minutes", 
+                  timeDifference / 60.0);
+            return YES;
+        }
+    }
+    
+    return NO;
+}
+
+// Method to configure certificate pinning
+- (void)configureCertificatePinning {
+    // Load certificate data from bundle
+    NSString *certPath = [[NSBundle mainBundle] pathForResource:@"server-cert" ofType:@"der"];
+    
+    if (certPath) {
+        self.trustedServerCertificateData = [NSData dataWithContentsOfFile:certPath];
+        
+        if (self.trustedServerCertificateData) {
+            NSLog(@"[WeaponX] 🔒 Loaded certificate for pinning: %ld bytes", (long)self.trustedServerCertificateData.length);
+            
+            // Create a secure session configuration
+            NSURLSessionConfiguration *config = [NSURLSessionConfiguration defaultSessionConfiguration];
+            
+            // Create the secure session with self as delegate for certificate validation
+            self.secureSession = [NSURLSession sessionWithConfiguration:config 
+                                                              delegate:self 
+                                                         delegateQueue:nil];
+            
+            // Store self as session delegate to avoid circular references
+            self.sessionDelegate = self;
+        } else {
+            NSLog(@"[WeaponX] ⚠️ Failed to load certificate data");
+        }
+    } else {
+        NSLog(@"[WeaponX] ⚠️ Certificate file not found in bundle");
+    }
+}
+
+// Method to setup iPad scene handling
+- (void)setupIPadSceneHandling {
+    if (!self.isIPad) {
+        return; // Only needed for iPad
+    }
+    
+    NSLog(@"[WeaponX] 📱 Setting up iPad scene handling");
+    
+    // Register for scene disconnect notifications on iPad
+    // This is applicable for iOS 13+ iPad with multiple windows
+    if (@available(iOS 13.0, *)) {
+        // Listen for scene connect notifications
+        [[NSNotificationCenter defaultCenter] addObserver:self 
+                                                 selector:@selector(sceneWillConnect:) 
+                                                     name:@"UISceneWillConnectNotification" 
+                                                   object:nil];
+        
+        // Listen for scene disconnect notifications
+        [[NSNotificationCenter defaultCenter] addObserver:self 
+                                                 selector:@selector(sceneWillDisconnect:) 
+                                                     name:@"UISceneWillDisconnectNotification" 
+                                                   object:nil];
+    }
+}
+
+// Handle scene will connect notification
+- (void)sceneWillConnect:(NSNotification *)notification {
+    if (!self.isIPad) {
+        return;
+    }
+    
+    NSLog(@"[WeaponX] 📱 Scene will connect notification received");
+    
+    // Extract scene information from notification
+    NSString *sceneIdentifier = @"unknown";
+    
+    if (@available(iOS 13.0, *)) {
+        UIScene *scene = notification.object;
+        if ([scene isKindOfClass:[UIScene class]]) {
+            sceneIdentifier = scene.session.persistentIdentifier;
+        }
+    }
+    
+    // Register this scene with our system
+    [self registerSceneWithSystem:sceneIdentifier];
+}
+
+// Handle scene will disconnect notification
+- (void)sceneWillDisconnect:(NSNotification *)notification {
+    if (!self.isIPad) {
+        return;
+    }
+    
+    NSLog(@"[WeaponX] 📱 Scene will disconnect notification received");
+    
+    // Prepare for scene disconnect by cleaning up resources
+    [self prepareForSceneDisconnect];
+}
+
+@end

@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>AllowedProcesses</key>
+	<array>
+		<string>*</string>
+	</array>
+	<key>extensions</key>
+	<array>
+		<string>file-read* SANDBOX_REDIRECTED_PATH=/var/mobile/Containers/Data/Application/*</string>
+		<string>file-write* SANDBOX_REDIRECTED_PATH=/var/mobile/Containers/Data/Application/*</string>
+		<string>file-read* SANDBOX_REDIRECTED_PATH=/var/mobile/Library/Preferences/*</string>
+		<string>file-write* SANDBOX_REDIRECTED_PATH=/var/mobile/Library/Preferences/*</string>
+		<string>file-read* SANDBOX_REDIRECTED_PATH=/var/mobile/Library/*</string>
+		<string>file-write* SANDBOX_REDIRECTED_PATH=/var/mobile/Library/*</string>
+		<string>file-read* SANDBOX_REDIRECTED_PATH=/var/mobile/Library/Caches/*</string>
+		<string>file-write* SANDBOX_REDIRECTED_PATH=/var/mobile/Library/Caches/*</string>
+		<string>file-read* SANDBOX_REDIRECTED_PATH=/var/tmp/*</string>
+		<string>file-write* SANDBOX_REDIRECTED_PATH=/var/tmp/*</string>
+		<string>file-read* SANDBOX_REDIRECTED_PATH=/private/var/mobile/Containers/Data/Application/*</string>
+		<string>file-write* SANDBOX_REDIRECTED_PATH=/private/var/mobile/Containers/Data/Application/*</string>
+		<string>file-read* SANDBOX_REDIRECTED_PATH=/private/var/mobile/Library/Preferences/*</string>
+		<string>file-write* SANDBOX_REDIRECTED_PATH=/private/var/mobile/Library/Preferences/*</string>
+		<string>file-read* SANDBOX_REDIRECTED_PATH=/private/var/mobile/Library/*</string>
+		<string>file-write* SANDBOX_REDIRECTED_PATH=/private/var/mobile/Library/*</string>
+		<string>file-read* SANDBOX_REDIRECTED_PATH=/private/var/mobile/Library/Caches/*</string>
+		<string>file-write* SANDBOX_REDIRECTED_PATH=/private/var/mobile/Library/Caches/*</string>
+		<string>file-read* SANDBOX_REDIRECTED_PATH=/private/var/tmp/*</string>
+		<string>file-write* SANDBOX_REDIRECTED_PATH=/private/var/tmp/*</string>
+	</array>
+	<key>sandbox-extensions</key>
+	<array>
+		<dict>
+			<key>extension_class</key>
+			<string>com.apple.app-sandbox.read-write</string>
+			<key>path</key>
+			<string>/var/jb/var/mobile/Library/WeaponX</string>
+			<key>type</key>
+			<string>file</string>
+		</dict>
+		<dict>
+			<key>extension_class</key>
+			<string>com.apple.app-sandbox.read-write</string>
+			<key>path</key>
+			<string>/var/mobile/Library/Keychains</string>
+			<key>type</key>
+			<string>file</string>
+		</dict>
+	</array>
+</dict>
+</plist> 

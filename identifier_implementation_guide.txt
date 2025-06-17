@@ -1,0 +1,286 @@
+# Identifier Implementation Pattern Guide
+
+## Overall Architecture
+
+### 1. Manager Pattern
+Each identifier type follows a consistent pattern with three key components:
+
+1. **Specific Identifier Manager Class**
+   - Implements singleton pattern for global access
+   - Handles generation, validation, and storage of specific identifier
+   - Contains methods for:
+     - Generating new identifiers with proper format
+     - Validating identifier format
+     - Getting/Setting current identifier value
+     - Error reporting
+
+2. **Central Manager Integration**
+   - Central manager coordinates all identifiers
+   - Provides consistent interface for all identifier types
+   - Handles persistence, profiles, and app scoping
+
+3. **Hook Implementation**
+   - Each identifier has corresponding system API hooks
+   - Uses conditional logic for when to apply spoofing
+
+## Implementation Steps for New Identifier
+
+### Step 1: Create Specific Manager Class
+
+```objc
+// SpecificManager.h
+@interface SpecificManager : NSObject
+
++ (instancetype)sharedManager;
+
+// Generation
+- (NSString *)generateSpecificID;
+- (NSString *)currentSpecificID;
+- (void)setCurrentSpecificID:(NSString *)value;
+
+// Validation
+- (BOOL)isValidSpecificID:(NSString *)value;
+
+// Error Handling
+- (NSError *)lastError;
+
+@end
+
+// SpecificManager.m
+@implementation SpecificManager {
+    NSString *_currentValue;
+    NSError *_lastError;
+}
+
++ (instancetype)sharedManager {
+    static SpecificManager *sharedInstance = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        sharedInstance = [[self alloc] init];
+    });
+    return sharedInstance;
+}
+
+- (NSString *)generateSpecificID {
+    self.error = nil;
+    
+    // 1. Generate identifier with proper format
+    // 2. Use secure random generation if needed
+    // 3. Validate format
+    // 4. Store in instance variable
+    
+    if ([self isValidSpecificID:newValue]) {
+        _currentValue = [newValue copy];
+        return _currentValue;
+    } else {
+        _lastError = [NSError errorWithDomain:@"com.domain" 
+                                         code:1002 
+                                     userInfo:@{NSLocalizedDescriptionKey: @"Generated ID failed validation"}];
+        return nil;
+    }
+}
+
+- (NSString *)currentSpecificID {
+    return _currentValue;
+}
+
+- (void)setCurrentSpecificID:(NSString *)value {
+    if ([self isValidSpecificID:value]) {
+        _currentValue = [value copy];
+    }
+}
+
+- (BOOL)isValidSpecificID:(NSString *)value {
+    if (!value) return NO;
+    
+    // Implement validation logic:
+    // - Format checking with regex
+    // - Length verification
+    // - Character set validation
+    
+    return YES; // if valid
+}
+
+- (NSError *)lastError {
+    return _lastError;
+}
+@end
+```
+
+### Step 2: Integrate with Central Manager
+
+```objc
+// In central manager .h file
+- (NSString *)generateSpecificID;
+- (BOOL)setCustomSpecificID:(NSString *)value;
+
+// In central manager .m file
+- (NSString *)generateSpecificID {
+    NSString *newID = [[SpecificManager sharedManager] generateSpecificID];
+    if (!newID) {
+        self.error = [[SpecificManager sharedManager] lastError];
+        return nil;
+    }
+    
+    // Save to profile-specific path
+    NSString *identityDir = [self profileIdentityPath];
+    if (identityDir) {
+        // Create dictionary with value and timestamp
+        NSDictionary *idDict = @{@"value": newID, @"lastUpdated": [NSDate date]};
+        
+        // Save to specific plist file
+        NSString *idPath = [identityDir stringByAppendingPathComponent:@"specific_id.plist"];
+        [idDict writeToFile:idPath atomically:YES];
+        
+        // Also update combined identifiers file
+        NSString *allIDsPath = [identityDir stringByAppendingPathComponent:@"device_ids.plist"];
+        NSMutableDictionary *allIDs = [NSMutableDictionary dictionaryWithContentsOfFile:allIDsPath] ?: 
+                                     [NSMutableDictionary dictionary];
+        allIDs[@"SpecificID"] = newID;
+        [allIDs writeToFile:allIDsPath atomically:YES];
+    }
+    
+    return newID;
+}
+
+- (NSString *)currentValueForIdentifier:(NSString *)type {
+    // Inside the existing method, add:
+    if ([type isEqualToString:@"SpecificID"]) {
+        // Check if file exists
+        NSString *identityDir = [self profileIdentityPath];
+        if (identityDir) {
+            NSString *idPath = [identityDir stringByAppendingPathComponent:@"specific_id.plist"];
+            NSDictionary *idDict = [NSDictionary dictionaryWithContentsOfFile:idPath];
+            if (idDict && idDict[@"value"]) {
+                return idDict[@"value"];
+            }
+        }
+        
+        // If no stored value, get default
+        NSString *result = [[SpecificManager sharedManager] currentSpecificID];
+        return result;
+    }
+    
+    // Continue with other identifier types...
+}
+
+- (BOOL)setCustomSpecificID:(NSString *)value {
+    return [self saveCustomValue:value forType:@"SpecificID"];
+}
+
+- (BOOL)saveCustomValue:(NSString *)value forType:(NSString *)type {
+    // This should already exist in central manager
+    if ([type isEqualToString:@"SpecificID"]) {
+        [[SpecificManager sharedManager] setCurrentSpecificID:value];
+        
+        // Store to file system
+        NSString *identityDir = [self profileIdentityPath];
+        if (identityDir) {
+            NSDictionary *idDict = @{@"value": value, @"lastUpdated": [NSDate date]};
+            NSString *idPath = [identityDir stringByAppendingPathComponent:@"specific_id.plist"];
+            [idDict writeToFile:idPath atomically:YES];
+            
+            // Update in central list
+            NSString *allIDsPath = [identityDir stringByAppendingPathComponent:@"device_ids.plist"];
+            NSMutableDictionary *allIDs = [NSMutableDictionary dictionaryWithContentsOfFile:allIDsPath] ?: 
+                                         [NSMutableDictionary dictionary];
+            allIDs[@"SpecificID"] = value;
+            [allIDs writeToFile:allIDsPath atomically:YES];
+            
+            return YES;
+        }
+        return NO;
+    }
+    
+    // Continue with other types...
+}
+```
+
+### Step 3: Implement Hook Logic
+
+```objc
+// In Tweak.x file
+%hook TargetClass
+
+- (id)targetMethod {
+    // Check if central manager exists
+    if (!%c(CentralManager)) {
+        return %orig;
+    }
+    
+    // Get central manager
+    CentralManager *manager = [%c(CentralManager) sharedManager];
+    NSString *currentBundleID = [[NSBundle mainBundle] bundleIdentifier];
+    
+    // Check if app should be modified
+    if (![manager isApplicationEnabled:currentBundleID]) {
+        return %orig;
+    }
+    
+    // Check if this specific identifier type is enabled
+    if ([manager isIdentifierEnabled:@"SpecificID"]) {
+        NSString *idValue = [manager currentValueForIdentifier:@"SpecificID"];
+        if (idValue) {
+            // Return appropriate spoofed value
+            // This will depend on what the original method returns
+            // For example, for UUID-style identifiers:
+            return [[NSUUID alloc] initWithUUIDString:idValue];
+            
+            // For string identifiers:
+            // return idValue;
+            
+            // For numeric values, convert appropriately:
+            // return @([idValue integerValue]);
+        }
+    }
+    
+    // Fall back to original if not enabled or no value
+    return %orig;
+}
+
+%end
+```
+
+### Step 4: Register in Settings UI
+
+```objc
+// In your UI code
+[self addIdentifierSection:@"SpecificID" title:@"Human Readable Name"];
+
+// In your toggle handler
+if ([identifierType isEqualToString:@"SpecificID"]) {
+    if (switchControl.on) {
+        [self.manager generateSpecificID];
+    }
+    // Update UI with new value
+    [self updateIdentifierDisplay:@"SpecificID"];
+}
+
+// In your settings initialization
+UISwitch *specificIDSwitch = self.identifierSwitches[@"SpecificID"];
+if (specificIDSwitch) {
+    specificIDSwitch.on = [self.manager isIdentifierEnabled:@"SpecificID"];
+}
+```
+
+### Step 5: Add to Initialization
+
+```objc
+// In your initialization method
+// Add your new identifier type to the dict of enabled identifiers
+enabledIdentifiers[@"SpecificID"] = @NO; // Default to off
+```
+
+## Best Practices
+
+1. **Format Validation**: Always validate identifiers strictly before using them
+2. **Error Handling**: Provide detailed error information when generation fails
+3. **Secure Random**: Use cryptographically secure random for any random generation
+4. **Thread Safety**: Use proper synchronization for shared resources
+5. **Caching**: Cache values appropriately to avoid frequent disk access
+6. **Persistence**: Store values in appropriate files with timestamps
+7. **Profiles**: Support profile-specific values
+8. **Logging**: Add detailed logging for debugging
+9. **System App Exclusion**: Skip hooks for system apps
+
+This pattern allows for clean extension with new identifier types while maintaining consistency with the existing architecture. 
