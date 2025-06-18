@@ -1,5 +1,5 @@
 TARGET := iphone:clang:16.5:15.0
-ARCHS = arm64
+ARCHS = arm64 arm64e
 ROOTLESS = 1
 LOGOS_DEFAULT_GENERATOR = internal
 INSTALL_TARGET_PROCESSES = SpringBoard ProjectX
