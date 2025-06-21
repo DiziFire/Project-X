@@ -159,8 +159,11 @@
               @"darwin": @"24.4.0", @"xnu": @"10461.101.2~4"},
             @{@"version": @"18.5", @"build": @"22F79", 
               @"kernel_version": @"Darwin Kernel Version 24.5.0: Wed Apr 9 21:24:17 PDT 2025; root:xnu-10461.121.1~2/RELEASE_ARM64_T6000", 
-              @"darwin": @"24.5.0", @"xnu": @"10461.121.1~2"}
-        ];
+              @"darwin": @"24.5.0", @"xnu": @"10461.121.1~2"},
+            @{@"version": @"19.0", @"build": @"23A5261", 
+              @"kernel_version": @"Darwin Kernel Version 25.0.0: Mon Jun 9 15:00:00 PDT 2025; root:xnu-10461.130.1~2/RELEASE_ARM64_T6000", 
+              @"darwin": @"25.0.0", @"xnu": @"10461.130.1~2"}
+              ];
     }
     return self;
 }
