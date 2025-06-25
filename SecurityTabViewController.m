@@ -4,6 +4,7 @@
 #import "JailbreakDetectionBypass.h"
 #import "AppVersionSpoofingViewController.h"
 #import "DeviceSpecificSpoofingViewController.h"
+#import "VarCleanViewController.h"
 #import "IPStatusViewController.h"
 #import "IPMonitorService.h"
 #import "LocationSpoofingManager.h"
@@ -1233,6 +1234,9 @@
     // Add Device Specific Spoofing control
     [self setupDeviceSpecificSpoofingControl:contentView];
     
+    // Add VarClean control
+    [self setupVarCleanControl:contentView];
+
     // Add App Version Spoofing control
     [self setupAppVersionSpoofingControl:contentView];
     
@@ -3035,7 +3039,7 @@
     [NSLayoutConstraint activateConstraints:@[
         [self.copyrightLabel.leadingAnchor constraintEqualToAnchor:contentView.leadingAnchor],
         [self.copyrightLabel.trailingAnchor constraintEqualToAnchor:contentView.trailingAnchor],
-        [self.copyrightLabel.topAnchor constraintEqualToAnchor:contentView.topAnchor constant:1670], // Positioned after Canvas Fingerprinting (1530 + 120 + 20)
+        [self.copyrightLabel.topAnchor constraintEqualToAnchor:contentView.topAnchor constant:1790], // Positioned after Canvas Fingerprinting (1530 + 120 + 20)
         [self.copyrightLabel.bottomAnchor constraintEqualToAnchor:contentView.bottomAnchor constant:-30] // More bottom padding
     ]];
     
@@ -3434,6 +3438,249 @@
     // Navigate to DeviceSpecificSpoofingViewController
     DeviceSpecificSpoofingViewController *vc = [[DeviceSpecificSpoofingViewController alloc] init];
     vc.hidesBottomBarWhenPushed = NO;
+    [self.navigationController pushViewController:vc animated:YES];
+}
+
+- (void)setupVarCleanControl:(UIView *)contentView {
+    // Create a glassmorphic control for VarClean
+    UIVisualEffectView *controlView = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterialLight]];
+    controlView.layer.cornerRadius = 20;
+    controlView.clipsToBounds = YES;
+    controlView.alpha = 0.8;
+    controlView.translatesAutoresizingMaskIntoConstraints = NO;
+    [contentView addSubview:controlView];
+    
+    // VarClean label
+    self.varCleanLabel = [[UILabel alloc] init];
+    self.varCleanLabel.text = @"RootHide VarClean";
+    self.varCleanLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];
+    self.varCleanLabel.textColor = [UIColor labelColor];
+    self.varCleanLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [controlView.contentView addSubview:self.varCleanLabel];
+    
+    // Info button with circular background
+    UIView *infoBgView = [[UIView alloc] init];
+    infoBgView.backgroundColor = [UIColor.systemBlueColor colorWithAlphaComponent:0.1];
+    infoBgView.layer.cornerRadius = 12;
+    infoBgView.translatesAutoresizingMaskIntoConstraints = NO;
+    [controlView.contentView addSubview:infoBgView];
+    
+    UIButton *infoButton = [UIButton buttonWithType:UIButtonTypeInfoLight];
+    infoButton.tintColor = [UIColor systemBlueColor];
+    infoButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [infoButton addTarget:self action:@selector(showVarCleanInfo) forControlEvents:UIControlEventTouchUpInside];
+    [infoBgView addSubview:infoButton];
+    
+    // Container view for bottom row elements
+    UIView *bottomRowContainer = [[UIView alloc] init];
+    bottomRowContainer.translatesAutoresizingMaskIntoConstraints = NO;
+    [controlView.contentView addSubview:bottomRowContainer];
+    
+    // Create trash icon with circular background
+    UIView *trashBgView = [[UIView alloc] init];
+    trashBgView.backgroundColor = [UIColor.systemBlueColor colorWithAlphaComponent:0.1];
+    trashBgView.layer.cornerRadius = 12;
+    trashBgView.translatesAutoresizingMaskIntoConstraints = NO;
+    [bottomRowContainer addSubview:trashBgView];
+    
+    UIImageView *trashIconView = [[UIImageView alloc] init];
+    trashIconView.image = [UIImage systemImageNamed:@"trash"];
+    trashIconView.tintColor = [UIColor systemBlueColor];
+    trashIconView.contentMode = UIViewContentModeScaleAspectFit;
+    trashIconView.translatesAutoresizingMaskIntoConstraints = NO;
+    [trashBgView addSubview:trashIconView];
+    
+    // Access button for VarClean
+    self.varCleanAccessButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    if (@available(iOS 15.0, *)) {
+        UIButtonConfiguration *config = [UIButtonConfiguration filledButtonConfiguration];
+        config.title = @"Access";
+        config.titleTextAttributesTransformer = ^NSDictionary *(NSDictionary *attributes) {
+            NSMutableDictionary *newAttributes = [attributes mutableCopy];
+            [newAttributes setObject:[UIFont systemFontOfSize:14 weight:UIFontWeightSemibold] forKey:NSFontAttributeName];
+            return newAttributes;
+        };
+        config.contentInsets = NSDirectionalEdgeInsetsMake(4, 12, 4, 12);
+        config.background.backgroundColor = [UIColor systemBlueColor];
+        config.cornerStyle = UIButtonConfigurationCornerStyleMedium;
+        config.baseForegroundColor = [UIColor whiteColor];
+        [self.varCleanAccessButton setConfiguration:config];
+    } else {
+        [self.varCleanAccessButton setTitle:@"Access" forState:UIControlStateNormal];
+        self.varCleanAccessButton.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
+        self.varCleanAccessButton.backgroundColor = [UIColor systemBlueColor];
+        self.varCleanAccessButton.layer.cornerRadius = 15;
+        self.varCleanAccessButton.tintColor = [UIColor whiteColor];
+        #pragma clang diagnostic push
+        #pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        self.varCleanAccessButton.contentEdgeInsets = UIEdgeInsetsMake(4, 12, 4, 12);
+        #pragma clang diagnostic pop
+    }
+    
+    self.varCleanAccessButton.layer.shadowColor = [UIColor blackColor].CGColor;
+    self.varCleanAccessButton.layer.shadowOffset = CGSizeMake(0, 1);
+    self.varCleanAccessButton.layer.shadowOpacity = 0.2;
+    self.varCleanAccessButton.layer.shadowRadius = 2;
+    self.varCleanAccessButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.varCleanAccessButton addTarget:self action:@selector(varCleanAccessTapped:) forControlEvents:UIControlEventTouchUpInside];
+    [bottomRowContainer addSubview:self.varCleanAccessButton];
+    
+    // VarClean toggle switch
+    self.varCleanToggleSwitch = [[UISwitch alloc] init];
+    self.varCleanToggleSwitch.onTintColor = [UIColor systemBlueColor];
+    self.varCleanToggleSwitch.translatesAutoresizingMaskIntoConstraints = NO;
+    
+    // Check if VarClean is enabled
+    BOOL varCleanEnabled = [self.securitySettings boolForKey:@"varCleanEnabled"];
+    [self.varCleanToggleSwitch setOn:varCleanEnabled animated:NO];
+    
+    [self.varCleanToggleSwitch addTarget:self action:@selector(varCleanToggleChanged:) forControlEvents:UIControlEventValueChanged];
+    [bottomRowContainer addSubview:self.varCleanToggleSwitch];
+    
+    // Enable/disable access button based on toggle state
+    self.varCleanAccessButton.enabled = varCleanEnabled;
+    if (!varCleanEnabled) {
+        if (@available(iOS 15.0, *)) {
+            if (self.varCleanAccessButton.configuration) {
+                UIButtonConfiguration *config = [self.varCleanAccessButton.configuration copy];
+                config.background.backgroundColor = [UIColor systemGrayColor];
+                [self.varCleanAccessButton setConfiguration:config];
+            }
+            self.varCleanAccessButton.alpha = 0.6;
+        } else {
+            self.varCleanAccessButton.backgroundColor = [UIColor systemGrayColor];
+            self.varCleanAccessButton.alpha = 0.6;
+        }
+    }
+    
+    // Position control at the very end
+    [NSLayoutConstraint activateConstraints:@[
+        [controlView.topAnchor constraintEqualToAnchor:contentView.topAnchor constant:1670], // Position at the very end
+        [controlView.leadingAnchor constraintEqualToAnchor:contentView.leadingAnchor constant:20],
+        [controlView.trailingAnchor constraintEqualToAnchor:contentView.trailingAnchor constant:-20],
+        [controlView.heightAnchor constraintEqualToConstant:100],
+        
+        // Position label at the top
+        [self.varCleanLabel.leadingAnchor constraintEqualToAnchor:controlView.contentView.leadingAnchor constant:20],
+        [self.varCleanLabel.topAnchor constraintEqualToAnchor:controlView.contentView.topAnchor constant:15],
+        
+        // Position info button to the right of the label
+        [infoBgView.leadingAnchor constraintEqualToAnchor:self.varCleanLabel.trailingAnchor constant:10],
+        [infoBgView.centerYAnchor constraintEqualToAnchor:self.varCleanLabel.centerYAnchor],
+        [infoBgView.widthAnchor constraintEqualToConstant:24],
+        [infoBgView.heightAnchor constraintEqualToConstant:24],
+        
+        [infoButton.centerXAnchor constraintEqualToAnchor:infoBgView.centerXAnchor],
+        [infoButton.centerYAnchor constraintEqualToAnchor:infoBgView.centerYAnchor],
+        
+        // Position bottom row container
+        [bottomRowContainer.leadingAnchor constraintEqualToAnchor:controlView.contentView.leadingAnchor constant:20],
+        [bottomRowContainer.trailingAnchor constraintEqualToAnchor:controlView.contentView.trailingAnchor constant:-20],
+        [bottomRowContainer.topAnchor constraintEqualToAnchor:self.varCleanLabel.bottomAnchor constant:15],
+        [bottomRowContainer.heightAnchor constraintEqualToConstant:30],
+        
+        // Position elements inside bottom row container
+        [trashBgView.leadingAnchor constraintEqualToAnchor:bottomRowContainer.leadingAnchor],
+        [trashBgView.centerYAnchor constraintEqualToAnchor:bottomRowContainer.centerYAnchor],
+        [trashBgView.widthAnchor constraintEqualToConstant:24],
+        [trashBgView.heightAnchor constraintEqualToConstant:24],
+        
+        [trashIconView.centerXAnchor constraintEqualToAnchor:trashBgView.centerXAnchor],
+        [trashIconView.centerYAnchor constraintEqualToAnchor:trashBgView.centerYAnchor],
+        [trashIconView.widthAnchor constraintEqualToConstant:16],
+        [trashIconView.heightAnchor constraintEqualToConstant:16],
+        
+        [self.varCleanAccessButton.leadingAnchor constraintEqualToAnchor:trashBgView.trailingAnchor constant:10],
+        [self.varCleanAccessButton.centerYAnchor constraintEqualToAnchor:bottomRowContainer.centerYAnchor],
+        [self.varCleanAccessButton.widthAnchor constraintEqualToConstant:90],
+        [self.varCleanAccessButton.heightAnchor constraintEqualToConstant:30],
+        
+        [self.varCleanToggleSwitch.leadingAnchor constraintEqualToAnchor:self.varCleanAccessButton.trailingAnchor constant:10],
+        [self.varCleanToggleSwitch.centerYAnchor constraintEqualToAnchor:bottomRowContainer.centerYAnchor],
+        [self.varCleanToggleSwitch.trailingAnchor constraintEqualToAnchor:bottomRowContainer.trailingAnchor]
+    ]];
+}
+
+- (void)showVarCleanInfo {
+    UIAlertController *alert = [UIAlertController 
+                               alertControllerWithTitle:@"RootHide VarClean"
+                               message:@"Clean temporary files, caches, and jailbreak artifacts from the /var directory. This helps maintain privacy by removing traces of your activity and freeing up storage space. Based on the RootHide manager cleaning functionality."
+                               preferredStyle:UIAlertControllerStyleAlert];
+    
+    UIAlertAction *okAction = [UIAlertAction 
+                              actionWithTitle:@"OK" 
+                              style:UIAlertActionStyleDefault 
+                              handler:nil];
+    
+    [alert addAction:okAction];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)varCleanToggleChanged:(UISwitch *)sender {
+    BOOL enabled = sender.isOn;
+    
+    // Save setting immediately and synchronize
+    [self.securitySettings setBool:enabled forKey:@"varCleanEnabled"];
+    [self.securitySettings synchronize];
+    
+    // Enable/disable access button based on toggle state
+    self.varCleanAccessButton.enabled = enabled;
+    
+    // Animate alpha and background color change
+    [UIView animateWithDuration:0.2 animations:^{
+        if (@available(iOS 15.0, *)) {
+            UIButtonConfiguration *config = [self.varCleanAccessButton.configuration copy];
+            if (enabled) {
+                config.background.backgroundColor = [UIColor systemBlueColor];
+                self.varCleanAccessButton.alpha = 1.0;
+            } else {
+                config.background.backgroundColor = [UIColor systemGrayColor];
+                self.varCleanAccessButton.alpha = 0.6;
+            }
+            [self.varCleanAccessButton setConfiguration:config];
+        } else {
+            if (enabled) {
+                self.varCleanAccessButton.alpha = 1.0;
+                self.varCleanAccessButton.backgroundColor = [UIColor systemBlueColor];
+            } else {
+                self.varCleanAccessButton.alpha = 0.6;
+                self.varCleanAccessButton.backgroundColor = [UIColor systemGrayColor];
+            }
+        }
+    }];
+    
+    // Send notification about the setting change
+    NSMutableDictionary *userInfo = [NSMutableDictionary dictionary];
+    [userInfo setObject:@(enabled) forKey:@"enabled"];
+    [userInfo setObject:@"SecurityTabView" forKey:@"sender"];
+    
+    // Post notification on main thread
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"com.hydra.projectx.toggleVarClean" 
+                                                            object:nil 
+                                                          userInfo:userInfo];
+    });
+    
+    // Add haptic feedback
+    UIImpactFeedbackGenerator *generator = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+    [generator prepare];
+    [generator impactOccurred];
+}
+
+- (void)varCleanAccessTapped:(UIButton *)sender {
+    // Don't allow access if toggle is off
+    if (!self.varCleanToggleSwitch.isOn) {
+        return;
+    }
+    
+    // Add haptic feedback
+    UIImpactFeedbackGenerator *generator = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+    [generator prepare];
+    [generator impactOccurred];
+    
+    // Navigate to VarCleanViewController
+    VarCleanViewController *vc = [[VarCleanViewController alloc] init];
+    vc.hidesBottomBarWhenPushed = NO; // Keep tab bar visible like other views
     [self.navigationController pushViewController:vc animated:YES];
 }
 

@@ -27,9 +27,9 @@ ProjectXTweak_INSTALL_PATH = /Library/MobileSubstrate/DynamicLibraries
 ProjectXTweak_LDFLAGS = -F$(THEOS)/vendor/lib -framework CydiaSubstrate
 
 # App files
-ProjectX_FILES = $(filter-out Tweak.x WiFiHook.x StorageHooks.x UUIDHooks.x PasteboardHooks.x WeaponXDaemon.m JailbreakDetectionBypass.m, $(wildcard *.m)) JailbreakDetectionBypass_App.m fishhook.c IOSVersionInfo.m UptimeManager.m AppInstallUUIDManager.m AppContainerUUIDManager.m AppVersionSpoofingViewController.m IPStatusViewController.m IPStatusCacheManager.m IPMonitorService.m ProjectXSceneDelegate.m ProgressHUDView.m PickupDropManager.m MapTabViewController+PickupDrop.m UberFareCalculator.m LocationHeaderView.m MapTabViewControllerExtension.m DomainBlockingSettings.m DomainManagementViewController.m
+ProjectX_FILES = $(filter-out Tweak.x WiFiHook.x StorageHooks.x UUIDHooks.x PasteboardHooks.x WeaponXDaemon.m JailbreakDetectionBypass.m, $(wildcard *.m)) JailbreakDetectionBypass_App.m fishhook.c IOSVersionInfo.m UptimeManager.m AppInstallUUIDManager.m AppContainerUUIDManager.m AppVersionSpoofingViewController.m IPStatusViewController.m IPStatusCacheManager.m IPMonitorService.m ProjectXSceneDelegate.m ProgressHUDView.m PickupDropManager.m MapTabViewController+PickupDrop.m UberFareCalculator.m LocationHeaderView.m MapTabViewControllerExtension.m DomainBlockingSettings.m DomainManagementViewController.m VarCleanViewController.m
 ProjectX_RESOURCE_DIRS = Assets.xcassets
-ProjectX_RESOURCE_FILES = Info.plist Icon.png LaunchScreen.storyboard
+ProjectX_RESOURCE_FILES = Info.plist Icon.png LaunchScreen.storyboard VarCleanRules.json
 ProjectX_PRIVATE_FRAMEWORKS = FrontBoardServices SpringBoardServices BackBoardServices StoreKitUI MobileCoreServices
 ProjectX_LDFLAGS = -framework CoreData -F$(THEOS)/sdks/iPhoneOS16.5.sdk/System/Library/PrivateFrameworks -framework UIKit -framework Foundation -rpath /var/jb/usr/lib
 ProjectX_FRAMEWORKS = UIKit Foundation MobileCoreServices CoreServices StoreKit IOKit Security CoreLocation CoreLocationUI
@@ -78,6 +78,11 @@ internal-stage::
 		mkdir -p $(THEOS_STAGING_DIR)/Applications/ProjectX.app/; \
 		ibtool --compile $(THEOS_STAGING_DIR)/Applications/ProjectX.app/LaunchScreen.storyboardc LaunchScreen.storyboard || true; \
 		cp -a LaunchScreen.storyboard $(THEOS_STAGING_DIR)/Applications/ProjectX.app/; \
+	fi
+	@echo "Ensuring varCleanRules.json is in app bundle..."
+	@if [ -f "varCleanRules.json" ]; then \
+		mkdir -p $(THEOS_STAGING_DIR)/Applications/ProjectX.app/; \
+		cp -a varCleanRules.json $(THEOS_STAGING_DIR)/Applications/ProjectX.app/; \
 	fi
 	@echo "Adding LaunchDaemon for persistent operation..."
 	@mkdir -p $(THEOS_STAGING_DIR)/Library/LaunchDaemons

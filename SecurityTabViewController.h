@@ -62,6 +62,11 @@
 @property (nonatomic, strong) UISwitch *deviceSpoofingToggleSwitch;
 @property (nonatomic, strong) UIButton *deviceSpoofingAccessButton;
 
+// VarClean Controls
+@property (nonatomic, strong) UILabel *varCleanLabel;
+@property (nonatomic, strong) UIButton *varCleanAccessButton;
+@property (nonatomic, strong) UISwitch *varCleanToggleSwitch;
+
 // App specific version spoofing control
 @property (nonatomic, strong) UILabel *appVersionSpoofingLabel;
 @property (nonatomic, strong) UISwitch *appVersionSpoofingToggleSwitch;
@@ -95,6 +100,7 @@
 - (void)setupNetworkDataSpoofControl:(UIView *)contentView;
 - (void)setupNetworkConnectionTypeControl:(UIView *)contentView;
 - (void)setupDeviceSpecificSpoofingControl:(UIView *)contentView;
+- (void)setupVarCleanControl:(UIView *)contentView;
 - (void)setupAppVersionSpoofingControl:(UIView *)contentView;
 - (void)setupCanvasFingerprintingControl:(UIView *)contentView;
 - (void)setupAlertChecksSection:(UIView *)contentView;
