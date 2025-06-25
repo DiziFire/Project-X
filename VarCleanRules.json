@@ -203,6 +203,7 @@
             ".serotonin_hidetext",
             ".TrollApps",
             "Serotonin.jp2",
+			"RoothidePatcher",
         ]
 	},
 	"/var/mobile/Media" : {
@@ -266,6 +267,7 @@
             "Flex",
             "DumpDecrypter",
             ".DynamicCowBackups",
+			"DumpIpa",
         ]
     },
 	"/var/mobile/Library" : {

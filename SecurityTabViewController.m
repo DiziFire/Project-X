@@ -3039,7 +3039,7 @@
     [NSLayoutConstraint activateConstraints:@[
         [self.copyrightLabel.leadingAnchor constraintEqualToAnchor:contentView.leadingAnchor],
         [self.copyrightLabel.trailingAnchor constraintEqualToAnchor:contentView.trailingAnchor],
-        [self.copyrightLabel.topAnchor constraintEqualToAnchor:contentView.topAnchor constant:1770], // Positioned after Canvas Fingerprinting (1530 + 120 + 20)
+        [self.copyrightLabel.topAnchor constraintEqualToAnchor:contentView.topAnchor constant:1790], // Positioned after Canvas Fingerprinting (1530 + 120 + 20)
         [self.copyrightLabel.bottomAnchor constraintEqualToAnchor:contentView.bottomAnchor constant:-30] // More bottom padding
     ]];
     
@@ -3442,7 +3442,7 @@
 }
 
 - (void)setupVarCleanControl:(UIView *)contentView {
-    // Create a glassmorphic control for Var Clean
+    // Create a glassmorphic control for VarClean
     UIVisualEffectView *controlView = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterialLight]];
     controlView.layer.cornerRadius = 20;
     controlView.clipsToBounds = YES;
@@ -3450,9 +3450,9 @@
     controlView.translatesAutoresizingMaskIntoConstraints = NO;
     [contentView addSubview:controlView];
     
-    // Var clean label
+    // VarClean label
     self.varCleanLabel = [[UILabel alloc] init];
-    self.varCleanLabel.text = @"RootHide Var Clean";
+    self.varCleanLabel.text = @"RootHide VarClean";
     self.varCleanLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];
     self.varCleanLabel.textColor = [UIColor labelColor];
     self.varCleanLabel.translatesAutoresizingMaskIntoConstraints = NO;
@@ -3460,13 +3460,13 @@
     
     // Info button with circular background
     UIView *infoBgView = [[UIView alloc] init];
-    infoBgView.backgroundColor = [UIColor.systemOrangeColor colorWithAlphaComponent:0.1];
+    infoBgView.backgroundColor = [UIColor.systemBlueColor colorWithAlphaComponent:0.1];
     infoBgView.layer.cornerRadius = 12;
     infoBgView.translatesAutoresizingMaskIntoConstraints = NO;
     [controlView.contentView addSubview:infoBgView];
     
     UIButton *infoButton = [UIButton buttonWithType:UIButtonTypeInfoLight];
-    infoButton.tintColor = [UIColor systemOrangeColor];
+    infoButton.tintColor = [UIColor systemBlueColor];
     infoButton.translatesAutoresizingMaskIntoConstraints = NO;
     [infoButton addTarget:self action:@selector(showVarCleanInfo) forControlEvents:UIControlEventTouchUpInside];
     [infoBgView addSubview:infoButton];
@@ -3478,19 +3478,19 @@
     
     // Create trash icon with circular background
     UIView *trashBgView = [[UIView alloc] init];
-    trashBgView.backgroundColor = [UIColor.systemOrangeColor colorWithAlphaComponent:0.1];
+    trashBgView.backgroundColor = [UIColor.systemBlueColor colorWithAlphaComponent:0.1];
     trashBgView.layer.cornerRadius = 12;
     trashBgView.translatesAutoresizingMaskIntoConstraints = NO;
     [bottomRowContainer addSubview:trashBgView];
     
     UIImageView *trashIconView = [[UIImageView alloc] init];
     trashIconView.image = [UIImage systemImageNamed:@"trash"];
-    trashIconView.tintColor = [UIColor systemOrangeColor];
+    trashIconView.tintColor = [UIColor systemBlueColor];
     trashIconView.contentMode = UIViewContentModeScaleAspectFit;
     trashIconView.translatesAutoresizingMaskIntoConstraints = NO;
     [trashBgView addSubview:trashIconView];
     
-    // Access button for Var Clean
+    // Access button for VarClean
     self.varCleanAccessButton = [UIButton buttonWithType:UIButtonTypeSystem];
     if (@available(iOS 15.0, *)) {
         UIButtonConfiguration *config = [UIButtonConfiguration filledButtonConfiguration];
@@ -3501,14 +3501,14 @@
             return newAttributes;
         };
         config.contentInsets = NSDirectionalEdgeInsetsMake(4, 12, 4, 12);
-        config.background.backgroundColor = [UIColor systemOrangeColor];
+        config.background.backgroundColor = [UIColor systemBlueColor];
         config.cornerStyle = UIButtonConfigurationCornerStyleMedium;
         config.baseForegroundColor = [UIColor whiteColor];
         [self.varCleanAccessButton setConfiguration:config];
     } else {
         [self.varCleanAccessButton setTitle:@"Access" forState:UIControlStateNormal];
         self.varCleanAccessButton.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
-        self.varCleanAccessButton.backgroundColor = [UIColor systemOrangeColor];
+        self.varCleanAccessButton.backgroundColor = [UIColor systemBlueColor];
         self.varCleanAccessButton.layer.cornerRadius = 15;
         self.varCleanAccessButton.tintColor = [UIColor whiteColor];
         #pragma clang diagnostic push
@@ -3525,12 +3525,12 @@
     [self.varCleanAccessButton addTarget:self action:@selector(varCleanAccessTapped:) forControlEvents:UIControlEventTouchUpInside];
     [bottomRowContainer addSubview:self.varCleanAccessButton];
     
-    // Var clean toggle switch
+    // VarClean toggle switch
     self.varCleanToggleSwitch = [[UISwitch alloc] init];
-    self.varCleanToggleSwitch.onTintColor = [UIColor systemOrangeColor];
+    self.varCleanToggleSwitch.onTintColor = [UIColor systemBlueColor];
     self.varCleanToggleSwitch.translatesAutoresizingMaskIntoConstraints = NO;
     
-    // Check if var clean is enabled
+    // Check if VarClean is enabled
     BOOL varCleanEnabled = [self.securitySettings boolForKey:@"varCleanEnabled"];
     [self.varCleanToggleSwitch setOn:varCleanEnabled animated:NO];
     
@@ -3555,7 +3555,7 @@
     
     // Position control at the very end
     [NSLayoutConstraint activateConstraints:@[
-        [controlView.topAnchor constraintEqualToAnchor:contentView.topAnchor constant:1650], // Position at the very end
+        [controlView.topAnchor constraintEqualToAnchor:contentView.topAnchor constant:1670], // Position at the very end
         [controlView.leadingAnchor constraintEqualToAnchor:contentView.leadingAnchor constant:20],
         [controlView.trailingAnchor constraintEqualToAnchor:contentView.trailingAnchor constant:-20],
         [controlView.heightAnchor constraintEqualToConstant:100],
@@ -3603,7 +3603,7 @@
 
 - (void)showVarCleanInfo {
     UIAlertController *alert = [UIAlertController 
-                               alertControllerWithTitle:@"RootHide Var Clean"
+                               alertControllerWithTitle:@"RootHide VarClean"
                                message:@"Clean temporary files, caches, and jailbreak artifacts from the /var directory. This helps maintain privacy by removing traces of your activity and freeing up storage space. Based on the RootHide manager cleaning functionality."
                                preferredStyle:UIAlertControllerStyleAlert];
     
@@ -3631,7 +3631,7 @@
         if (@available(iOS 15.0, *)) {
             UIButtonConfiguration *config = [self.varCleanAccessButton.configuration copy];
             if (enabled) {
-                config.background.backgroundColor = [UIColor systemOrangeColor];
+                config.background.backgroundColor = [UIColor systemBlueColor];
                 self.varCleanAccessButton.alpha = 1.0;
             } else {
                 config.background.backgroundColor = [UIColor systemGrayColor];
@@ -3641,7 +3641,7 @@
         } else {
             if (enabled) {
                 self.varCleanAccessButton.alpha = 1.0;
-                self.varCleanAccessButton.backgroundColor = [UIColor systemOrangeColor];
+                self.varCleanAccessButton.backgroundColor = [UIColor systemBlueColor];
             } else {
                 self.varCleanAccessButton.alpha = 0.6;
                 self.varCleanAccessButton.backgroundColor = [UIColor systemGrayColor];

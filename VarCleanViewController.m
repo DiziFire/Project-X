@@ -22,7 +22,7 @@
     
     // Setup refresh control
     UIRefreshControl *refreshControl = [[UIRefreshControl alloc] init];
-    refreshControl.tintColor = [UIColor systemOrangeColor];
+    refreshControl.tintColor = [UIColor systemRedColor];
     [refreshControl addTarget:self action:@selector(manualRefresh) forControlEvents:UIControlEventValueChanged];
     self.tableView.refreshControl = refreshControl;
     
@@ -40,76 +40,227 @@
     // Select All floating button
     self.selectAllFloatingButton = [UIButton buttonWithType:UIButtonTypeSystem];
     
+    // Create blur effect background
+    UIBlurEffect *blurEffect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial];
+    UIVisualEffectView *selectAllBlurView = [[UIVisualEffectView alloc] initWithEffect:blurEffect];
+    selectAllBlurView.layer.cornerRadius = 12;
+    selectAllBlurView.layer.masksToBounds = YES;
+    selectAllBlurView.translatesAutoresizingMaskIntoConstraints = NO;
+    selectAllBlurView.alpha = 0.9;
+    selectAllBlurView.layer.zPosition = 1000; // HIGH Z-INDEX to stay above table view
+    
+    // Setup button appearance
     if (@available(iOS 15.0, *)) {
-        UIButtonConfiguration *config = [UIButtonConfiguration filledButtonConfiguration];
+        UIButtonConfiguration *config = [UIButtonConfiguration plainButtonConfiguration];
         config.image = [UIImage systemImageNamed:@"checkmark.circle.fill"];
-        config.buttonSize = UIButtonConfigurationSizeLarge;
-        config.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
-        config.background.backgroundColor = [UIColor systemBlueColor];
-        config.baseForegroundColor = [UIColor whiteColor];
+        config.title = @"Select All";
+        config.imagePlacement = NSDirectionalRectEdgeTop;
+        config.imagePadding = 4;
+        config.cornerStyle = UIButtonConfigurationCornerStyleMedium;
+        config.background.backgroundColor = [UIColor.systemBlueColor colorWithAlphaComponent:0.1];
+        config.baseForegroundColor = [UIColor systemBlueColor];
+        config.contentInsets = NSDirectionalEdgeInsetsMake(8, 8, 8, 8);
+        config.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey,id> * _Nonnull(NSDictionary<NSAttributedStringKey,id> * _Nonnull textAttributes) {
+            NSMutableDictionary *newAttributes = [textAttributes mutableCopy];
+            newAttributes[NSFontAttributeName] = [UIFont systemFontOfSize:11 weight:UIFontWeightMedium];
+            return newAttributes;
+        };
         [self.selectAllFloatingButton setConfiguration:config];
     } else {
         [self.selectAllFloatingButton setImage:[UIImage systemImageNamed:@"checkmark.circle.fill"] forState:UIControlStateNormal];
-        self.selectAllFloatingButton.backgroundColor = [UIColor systemBlueColor];
-        self.selectAllFloatingButton.tintColor = [UIColor whiteColor];
-        self.selectAllFloatingButton.layer.cornerRadius = 30;
-        self.selectAllFloatingButton.layer.masksToBounds = YES;
+        [self.selectAllFloatingButton setTitle:@"Select All" forState:UIControlStateNormal];
+        self.selectAllFloatingButton.backgroundColor = [UIColor.systemBlueColor colorWithAlphaComponent:0.1];
+        self.selectAllFloatingButton.layer.cornerRadius = 10;
+        self.selectAllFloatingButton.titleLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightMedium];
+        
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        self.selectAllFloatingButton.imageEdgeInsets = UIEdgeInsetsMake(-10, 0, 0, 0);
+        self.selectAllFloatingButton.titleEdgeInsets = UIEdgeInsetsMake(20, -20, 0, 0);
+#pragma clang diagnostic pop
+        
+        self.selectAllFloatingButton.contentVerticalAlignment = UIControlContentVerticalAlignmentCenter;
     }
     
-    self.selectAllFloatingButton.layer.shadowColor = [UIColor blackColor].CGColor;
-    self.selectAllFloatingButton.layer.shadowOffset = CGSizeMake(0, 4);
-    self.selectAllFloatingButton.layer.shadowOpacity = 0.3;
-    self.selectAllFloatingButton.layer.shadowRadius = 8;
-    self.selectAllFloatingButton.layer.masksToBounds = NO;
-    
+    self.selectAllFloatingButton.tintColor = [UIColor systemBlueColor];
     self.selectAllFloatingButton.translatesAutoresizingMaskIntoConstraints = NO;
     [self.selectAllFloatingButton addTarget:self action:@selector(batchSelect) forControlEvents:UIControlEventTouchUpInside];
-    [self.view addSubview:self.selectAllFloatingButton];
+    
+    // Add subtle shadow
+    selectAllBlurView.layer.shadowColor = [UIColor blackColor].CGColor;
+    selectAllBlurView.layer.shadowOffset = CGSizeMake(0, 2);
+    selectAllBlurView.layer.shadowOpacity = 0.15;
+    selectAllBlurView.layer.shadowRadius = 4;
+    selectAllBlurView.layer.masksToBounds = NO;
+    
+    // Add blur view first, then button
+    [self.view addSubview:selectAllBlurView];
+    [selectAllBlurView.contentView addSubview:self.selectAllFloatingButton];
     
     // Clean floating button
     self.cleanFloatingButton = [UIButton buttonWithType:UIButtonTypeSystem];
     
+    // Create blur effect background
+    UIVisualEffectView *cleanBlurView = [[UIVisualEffectView alloc] initWithEffect:blurEffect];
+    cleanBlurView.layer.cornerRadius = 12;
+    cleanBlurView.layer.masksToBounds = YES;
+    cleanBlurView.translatesAutoresizingMaskIntoConstraints = NO;
+    cleanBlurView.alpha = 0.9;
+    cleanBlurView.layer.zPosition = 1000; // HIGH Z-INDEX to stay above table view
+    
+    // Setup button appearance
     if (@available(iOS 15.0, *)) {
-        UIButtonConfiguration *config = [UIButtonConfiguration filledButtonConfiguration];
+        UIButtonConfiguration *config = [UIButtonConfiguration plainButtonConfiguration];
         config.image = [UIImage systemImageNamed:@"trash.fill"];
-        config.buttonSize = UIButtonConfigurationSizeLarge;
-        config.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
-        config.background.backgroundColor = [UIColor systemOrangeColor];
-        config.baseForegroundColor = [UIColor whiteColor];
+        config.title = @"Clean";
+        config.imagePlacement = NSDirectionalRectEdgeTop;
+        config.imagePadding = 4;
+        config.cornerStyle = UIButtonConfigurationCornerStyleMedium;
+        config.background.backgroundColor = [UIColor.systemRedColor colorWithAlphaComponent:0.1];
+        config.baseForegroundColor = [UIColor systemRedColor];
+        config.contentInsets = NSDirectionalEdgeInsetsMake(8, 8, 8, 8);
+        config.titleTextAttributesTransformer = ^NSDictionary<NSAttributedStringKey,id> * _Nonnull(NSDictionary<NSAttributedStringKey,id> * _Nonnull textAttributes) {
+            NSMutableDictionary *newAttributes = [textAttributes mutableCopy];
+            newAttributes[NSFontAttributeName] = [UIFont systemFontOfSize:11 weight:UIFontWeightMedium];
+            return newAttributes;
+        };
         [self.cleanFloatingButton setConfiguration:config];
     } else {
         [self.cleanFloatingButton setImage:[UIImage systemImageNamed:@"trash.fill"] forState:UIControlStateNormal];
-        self.cleanFloatingButton.backgroundColor = [UIColor systemOrangeColor];
-        self.cleanFloatingButton.tintColor = [UIColor whiteColor];
-        self.cleanFloatingButton.layer.cornerRadius = 30;
-        self.cleanFloatingButton.layer.masksToBounds = YES;
+        [self.cleanFloatingButton setTitle:@"Clean" forState:UIControlStateNormal];
+        self.cleanFloatingButton.backgroundColor = [UIColor.systemRedColor colorWithAlphaComponent:0.1];
+        self.cleanFloatingButton.layer.cornerRadius = 10;
+        self.cleanFloatingButton.titleLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightMedium];
+        
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        self.cleanFloatingButton.imageEdgeInsets = UIEdgeInsetsMake(-10, 0, 0, 0);
+        self.cleanFloatingButton.titleEdgeInsets = UIEdgeInsetsMake(20, -20, 0, 0);
+#pragma clang diagnostic pop
+        
+        self.cleanFloatingButton.contentVerticalAlignment = UIControlContentVerticalAlignmentCenter;
     }
     
-    self.cleanFloatingButton.layer.shadowColor = [UIColor blackColor].CGColor;
-    self.cleanFloatingButton.layer.shadowOffset = CGSizeMake(0, 4);
-    self.cleanFloatingButton.layer.shadowOpacity = 0.3;
-    self.cleanFloatingButton.layer.shadowRadius = 8;
-    self.cleanFloatingButton.layer.masksToBounds = NO;
-    
+    self.cleanFloatingButton.tintColor = [UIColor systemRedColor];
     self.cleanFloatingButton.translatesAutoresizingMaskIntoConstraints = NO;
     [self.cleanFloatingButton addTarget:self action:@selector(varClean) forControlEvents:UIControlEventTouchUpInside];
-    [self.view addSubview:self.cleanFloatingButton];
+    
+    // Add subtle shadow
+    cleanBlurView.layer.shadowColor = [UIColor blackColor].CGColor;
+    cleanBlurView.layer.shadowOffset = CGSizeMake(0, 2);
+    cleanBlurView.layer.shadowOpacity = 0.15;
+    cleanBlurView.layer.shadowRadius = 4;
+    cleanBlurView.layer.masksToBounds = NO;
+    
+    // Add blur view first, then button
+    [self.view addSubview:cleanBlurView];
+    [cleanBlurView.contentView addSubview:self.cleanFloatingButton];
     
     // Position floating buttons
     [NSLayoutConstraint activateConstraints:@[
-        [self.selectAllFloatingButton.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-20],
-        [self.selectAllFloatingButton.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor constant:-40],
+        // Select All blur view
+        [selectAllBlurView.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-11],
+        [selectAllBlurView.centerYAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.centerYAnchor constant:-38],
+        [selectAllBlurView.widthAnchor constraintEqualToConstant:60],
+        [selectAllBlurView.heightAnchor constraintEqualToConstant:60],
+        
+        // Select All button (inside blur view) - centered
+        [self.selectAllFloatingButton.centerXAnchor constraintEqualToAnchor:selectAllBlurView.centerXAnchor],
+        [self.selectAllFloatingButton.centerYAnchor constraintEqualToAnchor:selectAllBlurView.centerYAnchor],
         [self.selectAllFloatingButton.widthAnchor constraintEqualToConstant:60],
         [self.selectAllFloatingButton.heightAnchor constraintEqualToConstant:60],
         
-        [self.cleanFloatingButton.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-20],
-        [self.cleanFloatingButton.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor constant:40],
+        // Clean blur view
+        [cleanBlurView.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-11],
+        [cleanBlurView.centerYAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.centerYAnchor constant:38],
+        [cleanBlurView.widthAnchor constraintEqualToConstant:60],
+        [cleanBlurView.heightAnchor constraintEqualToConstant:60],
+        
+        // Clean button (inside blur view) - centered
+        [self.cleanFloatingButton.centerXAnchor constraintEqualToAnchor:cleanBlurView.centerXAnchor],
+        [self.cleanFloatingButton.centerYAnchor constraintEqualToAnchor:cleanBlurView.centerYAnchor],
         [self.cleanFloatingButton.widthAnchor constraintEqualToConstant:60],
         [self.cleanFloatingButton.heightAnchor constraintEqualToConstant:60]
     ]];
+    
+    // Store blur views for animation
+    self.selectAllFloatingButton.superview.alpha = 0;
+    self.cleanFloatingButton.superview.alpha = 0;
+    self.selectAllFloatingButton.superview.transform = CGAffineTransformMakeScale(0.8, 0.8);
+    self.cleanFloatingButton.superview.transform = CGAffineTransformMakeScale(0.8, 0.8);
+    
+    // Add entrance animation
+    [UIView animateWithDuration:0.6 delay:0.2 usingSpringWithDamping:0.7 initialSpringVelocity:0.3 options:UIViewAnimationOptionCurveEaseOut animations:^{
+        self.selectAllFloatingButton.superview.alpha = 0.9;
+        self.selectAllFloatingButton.superview.transform = CGAffineTransformIdentity;
+    } completion:nil];
+    
+    [UIView animateWithDuration:0.6 delay:0.35 usingSpringWithDamping:0.7 initialSpringVelocity:0.3 options:UIViewAnimationOptionCurveEaseOut animations:^{
+        self.cleanFloatingButton.superview.alpha = 0.9;
+        self.cleanFloatingButton.superview.transform = CGAffineTransformIdentity;
+    } completion:nil];
+}
+
+#pragma mark - Scroll View Delegate
+
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView {
+    static CGFloat lastContentOffset = 0;
+    
+    CGFloat currentOffset = scrollView.contentOffset.y;
+    CGFloat deltaY = currentOffset - lastContentOffset;
+    
+    if (deltaY > 5) {
+        // Scrolling down - slightly fade buttons
+        [UIView animateWithDuration:0.3 animations:^{
+            self.selectAllFloatingButton.superview.alpha = 0.6;
+            self.cleanFloatingButton.superview.alpha = 0.6;
+        }];
+    } else if (deltaY < -5) {
+        // Scrolling up - show buttons fully
+        [UIView animateWithDuration:0.3 animations:^{
+            self.selectAllFloatingButton.superview.alpha = 0.9;
+            self.cleanFloatingButton.superview.alpha = 0.9;
+        }];
+    }
+    
+    lastContentOffset = currentOffset;
+}
+
+- (void)scrollViewDidEndDragging:(UIScrollView *)scrollView willDecelerate:(BOOL)decelerate {
+    if (!decelerate) {
+        // Show buttons fully when scrolling stops
+        [UIView animateWithDuration:0.3 animations:^{
+            self.selectAllFloatingButton.superview.alpha = 0.9;
+            self.cleanFloatingButton.superview.alpha = 0.9;
+        }];
+    }
+}
+
+- (void)scrollViewDidEndDecelerating:(UIScrollView *)scrollView {
+    // Show buttons fully when scrolling stops
+    [UIView animateWithDuration:0.3 animations:^{
+        self.selectAllFloatingButton.superview.alpha = 0.9;
+        self.cleanFloatingButton.superview.alpha = 0.9;
+    }];
 }
 
 - (void)batchSelect {
+    // Add haptic feedback
+    UIImpactFeedbackGenerator *generator = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleMedium];
+    [generator prepare];
+    [generator impactOccurred];
+    
+    // Add button press animation
+    [UIView animateWithDuration:0.1 animations:^{
+        self.selectAllFloatingButton.superview.transform = CGAffineTransformMakeScale(0.95, 0.95);
+        self.selectAllFloatingButton.superview.alpha = 0.7;
+    } completion:^(BOOL finished) {
+        [UIView animateWithDuration:0.1 animations:^{
+            self.selectAllFloatingButton.superview.transform = CGAffineTransformIdentity;
+            self.selectAllFloatingButton.superview.alpha = 0.9;
+        }];
+    }];
+    
     int selected = 0;
     for(NSDictionary* group in self.tableData) {
         for(NSMutableDictionary* item in group[@"items"]) {
@@ -119,13 +270,40 @@
             }
         }
     }
-    if(selected==0) for(NSDictionary* group in self.tableData) {
-        for(NSMutableDictionary* item in group[@"items"]) {
-            if([item[@"checked"] boolValue]) {
-                item[@"checked"] = @NO;
+    
+    if(selected == 0) {
+        // If everything was already selected, deselect all
+        for(NSDictionary* group in self.tableData) {
+            for(NSMutableDictionary* item in group[@"items"]) {
+                if([item[@"checked"] boolValue]) {
+                    item[@"checked"] = @NO;
+                }
             }
         }
+        
+        // Update button text and icon to reflect deselect action
+        if (@available(iOS 15.0, *)) {
+            UIButtonConfiguration *config = self.selectAllFloatingButton.configuration;
+            config.title = @"Select All";
+            config.image = [UIImage systemImageNamed:@"checkmark.circle"];
+            [self.selectAllFloatingButton setConfiguration:config];
+        } else {
+            [self.selectAllFloatingButton setTitle:@"Select All" forState:UIControlStateNormal];
+            [self.selectAllFloatingButton setImage:[UIImage systemImageNamed:@"checkmark.circle"] forState:UIControlStateNormal];
+        }
+    } else {
+        // Update button text and icon to reflect select all action
+        if (@available(iOS 15.0, *)) {
+            UIButtonConfiguration *config = self.selectAllFloatingButton.configuration;
+            config.title = @"Deselect";
+            config.image = [UIImage systemImageNamed:@"checkmark.circle.fill"];
+            [self.selectAllFloatingButton setConfiguration:config];
+        } else {
+            [self.selectAllFloatingButton setTitle:@"Deselect" forState:UIControlStateNormal];
+            [self.selectAllFloatingButton setImage:[UIImage systemImageNamed:@"checkmark.circle.fill"] forState:UIControlStateNormal];
+        }
     }
+    
     [self.tableView reloadData];
 }
 
@@ -339,6 +517,23 @@
 }
 
 - (void)varClean {
+    // Add haptic feedback
+    UIImpactFeedbackGenerator *generator = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleHeavy];
+    [generator prepare];
+    [generator impactOccurred];
+    
+    // Add button press animation
+    [UIView animateWithDuration:0.1 animations:^{
+        self.cleanFloatingButton.superview.transform = CGAffineTransformMakeScale(0.95, 0.95);
+        self.cleanFloatingButton.superview.alpha = 0.7;
+    } completion:^(BOOL finished) {
+        [UIView animateWithDuration:0.1 animations:^{
+            self.cleanFloatingButton.superview.transform = CGAffineTransformIdentity;
+            self.cleanFloatingButton.superview.alpha = 0.9;
+        }];
+    }];
+    
+    // Rest of the varClean method stays the same...
     // Collect all the files marked for deletion
     NSMutableArray *filesToDelete = [NSMutableArray array];
     for (NSDictionary* group in self.tableData) {
